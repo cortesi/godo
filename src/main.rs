@@ -1,12 +1,19 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use std::fs;
+use clap::{ArgGroup, Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+
+mod godo;
+use godo::{Godo, RunOptions};
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
+#[command(group(
+    ArgGroup::new("color_mode")
+        .args(["color", "no_color"])
+))]
 struct Cli {
     /// Override the godo directory location
     #[arg(long, global = true, value_name = "DIR")]
@@ -16,20 +23,20 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     repo_dir: Option<String>,
 
+    /// Enable colored output
+    #[arg(long, global = true)]
+    color: bool,
+
+    /// Disable colored output
+    #[arg(long = "no-color", global = true)]
+    no_color: bool,
+
+    /// Suppress all output
+    #[arg(long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
-}
-
-struct RunOptions {
-    persist: bool,
-    copy: Vec<String>,
-    name: String,
-    command: Vec<String>,
-}
-
-struct Godo {
-    godo_dir: PathBuf,
-    repo_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -73,74 +80,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
-    // Create main godo directory
-    fs::create_dir_all(godo_dir)?;
-
-    // Create sandboxes subdirectory
-    let sandboxes_dir = godo_dir.join("sandboxes");
-    fs::create_dir_all(sandboxes_dir)?;
-
-    Ok(())
-}
-
-impl Godo {
-    fn new(godo_dir: PathBuf, repo_dir: PathBuf) -> Result<Self> {
-        // Ensure godo directory exists
-        ensure_godo_directory(&godo_dir)?;
-
-        Ok(Self { godo_dir, repo_dir })
-    }
-
-    fn run(&self, options: &RunOptions) -> Result<()> {
-        println!("Running sandbox '{}' in {:?}", options.name, self.godo_dir);
-        println!("Repository directory: {:?}", self.repo_dir);
-
-        // TODO: Implement run functionality
-        // 1. Check we're in a git repo
-        // 2. Create worktree
-        // 3. Copy resources
-        // 4. Run command or shell
-        // 5. Commit results
-        // 6. Cleanup (unless --persist)
-
-        Ok(())
-    }
-
-    fn list(&self) -> Result<()> {
-        println!("Listing sandboxes in {:?}", self.godo_dir);
-
-        // TODO: Implement list functionality
-        // 1. Read sandboxes directory
-        // 2. Check which sandboxes exist
-        // 3. Show their status (running, persisted)
-
-        Ok(())
-    }
-
-    fn remove(&self, name: &str) -> Result<()> {
-        println!("Removing sandbox '{}' from {:?}", name, self.godo_dir);
-
-        // TODO: Implement remove functionality
-        // 1. Check if sandbox exists
-        // 2. Remove git worktree
-        // 3. Delete sandbox directory
-
-        Ok(())
-    }
-
-    fn prune(&self) -> Result<()> {
-        println!("Pruning sandboxes in {:?}", self.godo_dir);
-
-        // TODO: Implement prune functionality
-        // 1. List all sandboxes
-        // 2. Check which branches still exist
-        // 3. Remove sandboxes whose branches are gone
-
-        Ok(())
-    }
-}
-
 fn find_git_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir;
     loop {
@@ -176,8 +115,19 @@ fn main() -> Result<()> {
         find_git_root(&current_dir).context("Not in a git repository")?
     };
 
+    // Determine color output preference
+    let color = if cli.color {
+        true
+    } else if cli.no_color {
+        false
+    } else {
+        // Auto-detect based on terminal
+        std::io::stdout().is_terminal()
+    };
+
     // Create Godo instance
-    let godo = Godo::new(godo_dir, repo_dir).context("Failed to initialize godo")?;
+    let godo =
+        Godo::new(godo_dir, repo_dir, color, cli.quiet).context("Failed to initialize godo")?;
 
     match cli.command {
         Commands::Run {
