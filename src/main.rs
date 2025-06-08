@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,8 +12,24 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     dir: Option<String>,
 
+    /// Override the repository directory (defaults to current git project)
+    #[arg(long, global = true, value_name = "DIR")]
+    repo_dir: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+struct RunOptions {
+    persist: bool,
+    copy: Vec<String>,
+    name: String,
+    command: Vec<String>,
+}
+
+struct Godo {
+    godo_dir: PathBuf,
+    repo_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -56,7 +73,7 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn ensure_godo_directory(godo_dir: &Path) -> std::io::Result<()> {
+fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
     // Create main godo directory
     fs::create_dir_all(godo_dir)?;
 
@@ -67,7 +84,77 @@ fn ensure_godo_directory(godo_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() {
+impl Godo {
+    fn new(godo_dir: PathBuf, repo_dir: PathBuf) -> Result<Self> {
+        // Ensure godo directory exists
+        ensure_godo_directory(&godo_dir)?;
+
+        Ok(Self { godo_dir, repo_dir })
+    }
+
+    fn run(&self, options: &RunOptions) -> Result<()> {
+        println!("Running sandbox '{}' in {:?}", options.name, self.godo_dir);
+        println!("Repository directory: {:?}", self.repo_dir);
+
+        // TODO: Implement run functionality
+        // 1. Check we're in a git repo
+        // 2. Create worktree
+        // 3. Copy resources
+        // 4. Run command or shell
+        // 5. Commit results
+        // 6. Cleanup (unless --persist)
+
+        Ok(())
+    }
+
+    fn list(&self) -> Result<()> {
+        println!("Listing sandboxes in {:?}", self.godo_dir);
+
+        // TODO: Implement list functionality
+        // 1. Read sandboxes directory
+        // 2. Check which sandboxes exist
+        // 3. Show their status (running, persisted)
+
+        Ok(())
+    }
+
+    fn remove(&self, name: &str) -> Result<()> {
+        println!("Removing sandbox '{}' from {:?}", name, self.godo_dir);
+
+        // TODO: Implement remove functionality
+        // 1. Check if sandbox exists
+        // 2. Remove git worktree
+        // 3. Delete sandbox directory
+
+        Ok(())
+    }
+
+    fn prune(&self) -> Result<()> {
+        println!("Pruning sandboxes in {:?}", self.godo_dir);
+
+        // TODO: Implement prune functionality
+        // 1. List all sandboxes
+        // 2. Check which branches still exist
+        // 3. Remove sandboxes whose branches are gone
+
+        Ok(())
+    }
+}
+
+fn find_git_root(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = start_dir;
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
+        }
+    }
+}
+
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Determine godo directory (priority: CLI flag > env var > default)
@@ -79,11 +166,18 @@ fn main() {
         expand_tilde(DEFAULT_GODO_DIR)
     };
 
-    // Ensure godo directory exists
-    if let Err(e) = ensure_godo_directory(&godo_dir) {
-        eprintln!("Failed to create godo directory: {e}");
-        std::process::exit(1);
-    }
+    // Determine repository directory
+    let repo_dir = if let Some(repo) = &cli.repo_dir {
+        expand_tilde(repo)
+    } else {
+        // Find git root from current directory
+        let current_dir = std::env::current_dir().context("Failed to get current directory")?;
+
+        find_git_root(&current_dir).context("Not in a git repository")?
+    };
+
+    // Create Godo instance
+    let godo = Godo::new(godo_dir, repo_dir).context("Failed to initialize godo")?;
 
     match cli.command {
         Commands::Run {
@@ -92,16 +186,25 @@ fn main() {
             name,
             command,
         } => {
-            println!("run");
+            let options = RunOptions {
+                persist,
+                copy,
+                name,
+                command,
+            };
+
+            godo.run(&options)?;
         }
         Commands::List => {
-            println!("list");
+            godo.list()?;
         }
         Commands::Rm { name } => {
-            println!("rm");
+            godo.remove(&name)?;
         }
         Commands::Prune => {
-            println!("prune");
+            godo.prune()?;
         }
     }
+
+    Ok(())
 }
