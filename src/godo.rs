@@ -315,11 +315,6 @@ impl Godo {
 fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
     // Create main godo directory
     fs::create_dir_all(godo_dir)?;
-
-    // Create sandboxes subdirectory
-    let sandboxes_dir = godo_dir.join("sandboxes");
-    fs::create_dir_all(sandboxes_dir)?;
-
     Ok(())
 }
 
