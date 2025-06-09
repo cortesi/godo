@@ -16,24 +16,6 @@ macro_rules! out {
     }};
 }
 
-macro_rules! outln {
-    ($self:expr, $($arg:tt)*) => {{
-        use std::io::Write;
-        let mut stdout = $self.stdout();
-        writeln!(stdout, $($arg)*)?;
-    }};
-}
-
-macro_rules! outc {
-    ($self:expr, $color:expr, $($arg:tt)*) => {{
-        use std::io::Write;
-        let mut stdout = $self.stdout();
-        stdout.set_color(ColorSpec::new().set_fg(Some($color)))?;
-        write!(stdout, $($arg)*)?;
-        stdout.reset()?;
-    }};
-}
-
 macro_rules! outlnc {
     ($self:expr, $color:expr, $($arg:tt)*) => {{
         use std::io::Write;

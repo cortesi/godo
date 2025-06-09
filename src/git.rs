@@ -26,7 +26,17 @@ pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
     Ok(!status_output.trim().is_empty())
 }
 
+pub fn has_branch(repo_path: &Path, branch_name: &str) -> Result<bool> {
+    let output = run_git(repo_path, &["branch", "--list", branch_name])?;
+    let branch_output = String::from_utf8_lossy(&output.stdout);
+    Ok(!branch_output.trim().is_empty())
+}
+
 pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str) -> Result<()> {
+    if has_branch(repo_path, branch_name)? {
+        anyhow::bail!("Branch '{}' already exists", branch_name);
+    }
+
     let worktree_path_str = worktree_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
@@ -169,6 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn test_has_branch() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Main branch should exist
+        assert!(has_branch(&repo_path, "main")?);
+
+        // Non-existent branch should not exist
+        assert!(!has_branch(&repo_path, "non-existent-branch")?);
+
+        // Create a new branch
+        run_git(&repo_path, &["branch", "test-branch"])?;
+        assert!(has_branch(&repo_path, "test-branch")?);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_create_worktree_duplicate_branch() -> Result<()> {
         let (temp_dir, repo_path) = setup_test_repo()?;
 
@@ -189,9 +221,8 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(
-            error_msg.contains("Git command failed") && error_msg.contains("already exists"),
-            "Expected error about branch already existing, got: {}",
-            error_msg
+            error_msg.contains("Branch 'duplicate-branch' already exists"),
+            "Expected error about branch already existing, got: {error_msg}",
         );
 
         // Clean up
