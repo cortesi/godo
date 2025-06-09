@@ -81,7 +81,6 @@ impl Godo {
         })
     }
 
-
     pub fn run(
         &self,
         keep: bool,
@@ -121,17 +120,7 @@ impl Godo {
         );
 
         let branch_name = format!("godo/{name}");
-        let output = Command::new("git")
-            .current_dir(&self.repo_dir)
-            .args(["worktree", "add", "--quiet", "-b", &branch_name])
-            .arg(&sandbox_path)
-            .output()
-            .context("Failed to create git worktree")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to create worktree: {}", stderr);
-        }
+        git::create_worktree(&self.repo_dir, &sandbox_path, &branch_name)?;
 
         outlnc!(self, Color::Cyan, "Copying files to sandbox...");
 

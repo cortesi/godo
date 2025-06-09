@@ -4,8 +4,8 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
-mod godo;
 mod git;
+mod godo;
 use godo::Godo;
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
