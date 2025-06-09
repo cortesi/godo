@@ -23,9 +23,23 @@ pub struct Godo {
 }
 
 impl Godo {
-    pub fn new(godo_dir: PathBuf, repo_dir: PathBuf, color: bool, quiet: bool) -> Result<Self> {
+    pub fn new(
+        godo_dir: PathBuf,
+        repo_dir: Option<PathBuf>,
+        color: bool,
+        quiet: bool,
+    ) -> Result<Self> {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
+
+        // Determine repository directory
+        let repo_dir = if let Some(dir) = repo_dir {
+            dir
+        } else {
+            // Find git root from current directory
+            let current_dir = std::env::current_dir().context("Failed to get current directory")?;
+            find_git_root(&current_dir).context("Not in a git repository")?
+        };
 
         Ok(Self {
             godo_dir,
@@ -36,11 +50,7 @@ impl Godo {
     }
 
     pub fn run(&self, options: &RunOptions) -> Result<()> {
-        let sandbox_path = self.godo_dir.join("sandboxes").join(&options.name);
-
-        // Step 1: Check we're in a git repo (already done in main.rs)
-
-        // Step 2: Create worktree
+        let sandbox_path = self.godo_dir.join(&options.name);
         if !self.quiet {
             println!(
                 "Creating worktree for '{}' at {:?}",
@@ -61,7 +71,6 @@ impl Godo {
             anyhow::bail!("Failed to create worktree: {}", stderr);
         }
 
-        // Step 3: Copy resources using clonetree
         if !self.quiet {
             println!("Copying untracked files to sandbox...");
         }
@@ -71,7 +80,6 @@ impl Godo {
         clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
             .context("Failed to copy files to sandbox")?;
 
-        // Step 4: Run command or shell
         if !self.quiet {
             println!("Running in sandbox: {sandbox_path:?}");
         }
@@ -98,10 +106,6 @@ impl Godo {
         if !status.success() && !self.quiet {
             println!("Command exited with status: {status}");
         }
-
-        // TODO: Step 5: Commit results
-        // TODO: Step 6: Cleanup (unless --persist)
-
         Ok(())
     }
 
@@ -152,6 +156,19 @@ impl Godo {
             };
 
             Box::new(StandardStream::stdout(color_choice))
+        }
+    }
+}
+
+fn find_git_root(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = start_dir;
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
         }
     }
 }

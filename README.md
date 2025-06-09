@@ -16,7 +16,7 @@ committed to a branch you can merge whenever you like.
 $ godo run format cargo fmt
 ```
 
-1. A worktree appears in `~/.godo/sandboxes/format`.
+1. A worktree appears in `~/.godo/format`.
 2. `cargo fmt` runs there, touching only CoW copies.
 3. The tool prompts you for a commit message and writes changes to `godo/format`.
 4. The sandbox is deleted (pass `--persist` to keep it).
@@ -26,7 +26,7 @@ $ godo run format cargo fmt
 ## Features at a glance
 
 * Runs from inside **any** Git repo.
-* Sandboxes live under `~/.godo/sandboxes/<name>` by default.
+* Sandboxes live under `~/.godo/<name>` by default.
 * Customize the godo directory with `--dir` flag or `GODO_DIR` environment variable.
 * By default every untracked item-even those in `.gitignore` - is copied into the
   sandbox using APFS copy‑on‑write.  Limit what is copied with `--copy`.
@@ -91,11 +91,11 @@ cargo install godo
 
 1. **Detect repository** - walks up from the current directory until a `.git`
    folder is found.
-2. **Create worktree** - `git worktree add --quiet ~/.godo/sandboxes/<name> HEAD`
+2. **Create worktree** - `git worktree add --quiet ~/.godo/<name> HEAD`
    shares the parent repository’s object database, so no blobs are duplicated.
 3. **Copy resources** - for each pattern given with `--copy` (or for every
    untracked item if no patterns) `godo` runs `cp -cR <resource>
-   ~/.godo/sandboxes/<name>/`.  APFS performs a `clonefile(2)` call, so the copy is
+   ~/.godo/<name>/`.  APFS performs a `clonefile(2)` call, so the copy is
    instant and copy‑on‑write.
 4. **Run command or shell** - executes `$SHELL -c "<COMMAND>"` inside the
    sandbox, or opens an interactive shell if no command was supplied.  All
@@ -104,5 +104,5 @@ cargo install godo
    a commit message, and writes the commit. The branch is already attached to
    the parent repository.
 6. **Cleanup** - unless `--persist` was specified, `godo` runs `git worktree
-   remove --force ~/.godo/sandboxes/<name>` and deletes the sandbox directory.
+   remove --force ~/.godo/<name>` and deletes the sandbox directory.
 

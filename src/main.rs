@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 mod godo;
 use godo::{Godo, RunOptions};
@@ -80,18 +80,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn find_git_root(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = start_dir;
-    loop {
-        if current.join(".git").exists() {
-            return Some(current.to_path_buf());
-        }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
-        }
-    }
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -106,14 +94,7 @@ fn main() -> Result<()> {
     };
 
     // Determine repository directory
-    let repo_dir = if let Some(repo) = &cli.repo_dir {
-        expand_tilde(repo)
-    } else {
-        // Find git root from current directory
-        let current_dir = std::env::current_dir().context("Failed to get current directory")?;
-
-        find_git_root(&current_dir).context("Not in a git repository")?
-    };
+    let repo_dir = cli.repo_dir.as_ref().map(|repo| expand_tilde(repo));
 
     // Determine color output preference
     let color = if cli.color {
