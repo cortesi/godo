@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod godo;
+mod git;
 use godo::Godo;
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";

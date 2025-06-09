@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+use crate::git;
+
 macro_rules! out {
     ($self:expr, $($arg:tt)*) => {{
         use std::io::Write;
@@ -79,6 +81,7 @@ impl Godo {
         })
     }
 
+
     pub fn run(
         &self,
         keep: bool,
@@ -87,26 +90,12 @@ impl Godo {
         command: &[String],
     ) -> Result<()> {
         // Check for uncommitted changes
-        let status = Command::new("git")
-            .current_dir(&self.repo_dir)
-            .args(["status", "--porcelain"])
-            .output()
-            .context("Failed to check git status")?;
-
-        if !status.status.success() {
-            let stderr = String::from_utf8_lossy(&status.stderr);
-            anyhow::bail!("Failed to check git status: {}", stderr);
-        }
-
-        let status_output = String::from_utf8_lossy(&status.stdout);
-        if !status_output.trim().is_empty() {
+        if git::has_uncommitted_changes(&self.repo_dir)? {
             outlnc!(
                 self,
                 Color::Yellow,
                 "Warning: You have uncommitted changes:"
             );
-            outlnc!(self, Color::Yellow, "{}", status_output);
-
             if !self.no_prompt {
                 out!(self, "Continue creating worktree? [y/N] ");
                 io::stdout().flush()?;
@@ -204,6 +193,36 @@ impl Godo {
     }
 
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
+        let sandbox_path = self.godo_dir.join(name);
+
+        // Check if sandbox exists
+        if !sandbox_path.exists() {
+            anyhow::bail!("Sandbox '{}' does not exist", name);
+        }
+
+        // Check for uncommitted changes in the worktree
+        if !force && git::has_uncommitted_changes(&sandbox_path)? {
+            outlnc!(
+                self,
+                Color::Yellow,
+                "Warning: Sandbox '{}' has uncommitted changes",
+                name
+            );
+
+            if !self.no_prompt {
+                out!(self, "Continue with removal? [y/N] ");
+                io::stdout().flush()?;
+
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+
+                if !response.trim().to_lowercase().starts_with('y') {
+                    outlnc!(self, Color::Red, "Aborted.");
+                    return Ok(());
+                }
+            }
+        }
+
         outlnc!(
             self,
             Color::Yellow,
