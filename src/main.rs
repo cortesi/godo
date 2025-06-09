@@ -50,7 +50,7 @@ enum Commands {
     Run {
         /// Keep the sandbox after the command exits
         #[arg(long)]
-        persist: bool,
+        keep: bool,
 
         /// Exclude directories that match glob (can be specified multiple times)
         #[arg(long = "exclude", value_name = "GLOB")]
@@ -70,6 +70,10 @@ enum Commands {
     Rm {
         /// Name of the sandbox to remove
         name: String,
+
+        /// Force removal even if there are uncommitted changes
+        #[arg(long)]
+        force: bool,
     },
 
     /// Remove sandboxes whose branch no longer exists
@@ -95,7 +99,7 @@ fn main() -> Result<()> {
         // Print error in orange to stderr
         let mut stderr = StandardStream::stderr(ColorChoice::Auto);
         let _ = stderr.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(255, 165, 0))));
-        eprintln!("Error: {:#}", e);
+        eprintln!("Error: {e:#}");
         let _ = stderr.reset();
 
         std::process::exit(1);
@@ -134,18 +138,18 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Run {
-            persist,
+            keep,
             excludes,
             name,
             command,
         } => {
-            godo.run(persist, &excludes, &name, &command)?;
+            godo.run(keep, &excludes, &name, &command)?;
         }
         Commands::List => {
             godo.list()?;
         }
-        Commands::Rm { name } => {
-            godo.remove(&name)?;
+        Commands::Rm { name, force } => {
+            godo.remove(&name, force)?;
         }
         Commands::Prune => {
             godo.prune()?;

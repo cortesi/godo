@@ -81,7 +81,7 @@ impl Godo {
 
     pub fn run(
         &self,
-        persist: bool,
+        keep: bool,
         excludes: &[String],
         name: &str,
         command: &[String],
@@ -179,87 +179,9 @@ impl Godo {
             outlnc!(self, Color::Red, "Command exited with status: {status}");
         }
 
-        // Clean up if not persisting
-        if !persist {
-            outlnc!(self, Color::Cyan, "Cleaning up sandbox...");
-
-            // Get the initial commit of the branch to check if any commits were made
-            let initial_commit = Command::new("git")
-                .current_dir(&self.repo_dir)
-                .args(["rev-parse", &branch_name])
-                .output()
-                .context("Failed to get branch commit")?;
-
-            let initial_commit_sha = String::from_utf8_lossy(&initial_commit.stdout)
-                .trim()
-                .to_string();
-
-            // Try to remove the worktree
-            let remove_output = Command::new("git")
-                .current_dir(&self.repo_dir)
-                .args(["worktree", "remove", &sandbox_path.to_string_lossy()])
-                .output()
-                .context("Failed to remove worktree")?;
-
-            if !remove_output.status.success() {
-                let stderr = String::from_utf8_lossy(&remove_output.stderr);
-                outlnc!(
-                    self,
-                    Color::Yellow,
-                    "Cannot remove worktree: {}",
-                    stderr.trim()
-                );
-                outlnc!(
-                    self,
-                    Color::Yellow,
-                    "Worktree has uncommitted changes. Use 'godo rm {}' to force removal.",
-                    name
-                );
-                return Ok(());
-            }
-
-            // Check if the branch has any new commits
-            let current_commit = Command::new("git")
-                .current_dir(&self.repo_dir)
-                .args(["rev-parse", &branch_name])
-                .output()
-                .context("Failed to get current branch commit")?;
-
-            let current_commit_sha = String::from_utf8_lossy(&current_commit.stdout)
-                .trim()
-                .to_string();
-
-            if initial_commit_sha == current_commit_sha {
-                // No new commits, delete the branch
-                let delete_output = Command::new("git")
-                    .current_dir(&self.repo_dir)
-                    .args(["branch", "-d", &branch_name])
-                    .output()
-                    .context("Failed to delete branch")?;
-
-                if !delete_output.status.success() {
-                    let stderr = String::from_utf8_lossy(&delete_output.stderr);
-                    outlnc!(
-                        self,
-                        Color::Yellow,
-                        "Warning: Failed to delete branch: {}",
-                        stderr.trim()
-                    );
-                } else {
-                    outlnc!(
-                        self,
-                        Color::Green,
-                        "Sandbox and branch cleaned up successfully."
-                    );
-                }
-            } else {
-                outlnc!(
-                    self,
-                    Color::Green,
-                    "Sandbox removed. Branch {} kept (has commits).",
-                    branch_name
-                );
-            }
+        // Clean up if not keeping
+        if !keep {
+            self.cleanup_sandbox(name, false)?;
         }
 
         Ok(())
@@ -276,12 +198,12 @@ impl Godo {
         // TODO: Implement list functionality
         // 1. Read sandboxes directory
         // 2. Check which sandboxes exist
-        // 3. Show their status (running, persisted)
+        // 3. Show their status (running, kept)
 
         Ok(())
     }
 
-    pub fn remove(&self, name: &str) -> Result<()> {
+    pub fn remove(&self, name: &str, force: bool) -> Result<()> {
         outlnc!(
             self,
             Color::Yellow,
@@ -290,12 +212,7 @@ impl Godo {
             self.godo_dir
         );
 
-        // TODO: Implement remove functionality
-        // 1. Check if sandbox exists
-        // 2. Remove git worktree
-        // 3. Delete sandbox directory
-
-        Ok(())
+        self.cleanup_sandbox(name, force)
     }
 
     pub fn prune(&self) -> Result<()> {
@@ -310,6 +227,125 @@ impl Godo {
         // 1. List all sandboxes
         // 2. Check which branches still exist
         // 3. Remove sandboxes whose branches are gone
+
+        Ok(())
+    }
+
+    /// Clean up a sandbox by removing worktree and optionally the branch
+    fn cleanup_sandbox(&self, name: &str, force: bool) -> Result<()> {
+        outlnc!(self, Color::Cyan, "Cleaning up sandbox {}...", name);
+
+        let sandbox_path = self.godo_dir.join(name);
+        let branch_name = format!("godo/{name}");
+
+        // Get the initial commit of the branch to check if any commits were made
+        let initial_commit = Command::new("git")
+            .current_dir(&self.repo_dir)
+            .args(["rev-parse", &branch_name])
+            .output()
+            .context("Failed to get branch commit")?;
+
+        if !initial_commit.status.success() {
+            outlnc!(
+                self,
+                Color::Yellow,
+                "Branch {} not found, skipping branch cleanup",
+                branch_name
+            );
+            // Still try to remove the worktree directory if it exists
+            if sandbox_path.exists() {
+                fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
+            }
+            return Ok(());
+        }
+
+        let initial_commit_sha = String::from_utf8_lossy(&initial_commit.stdout)
+            .trim()
+            .to_string();
+
+        // Try to remove the worktree
+        let sandbox_path_str = sandbox_path.to_string_lossy();
+        let mut remove_args = vec!["worktree", "remove"];
+        if force {
+            remove_args.push("--force");
+        }
+        remove_args.push(&sandbox_path_str);
+
+        let remove_output = Command::new("git")
+            .current_dir(&self.repo_dir)
+            .args(&remove_args)
+            .output()
+            .context("Failed to remove worktree")?;
+
+        if !remove_output.status.success() {
+            let stderr = String::from_utf8_lossy(&remove_output.stderr);
+            outlnc!(
+                self,
+                Color::Yellow,
+                "Cannot remove worktree: {}",
+                stderr.trim()
+            );
+            if !force {
+                outlnc!(
+                    self,
+                    Color::Yellow,
+                    "Worktree has uncommitted changes. Use 'godo rm {} --force' to force removal.",
+                    name
+                );
+            }
+            return Ok(());
+        }
+
+        // Check if the branch has any new commits
+        let current_commit = Command::new("git")
+            .current_dir(&self.repo_dir)
+            .args(["rev-parse", &branch_name])
+            .output()
+            .context("Failed to get current branch commit")?;
+
+        let current_commit_sha = String::from_utf8_lossy(&current_commit.stdout)
+            .trim()
+            .to_string();
+
+        if initial_commit_sha == current_commit_sha || force {
+            // No new commits or forced deletion, delete the branch
+            let mut delete_args = vec!["branch"];
+            if force {
+                delete_args.push("-D");
+            } else {
+                delete_args.push("-d");
+            }
+            delete_args.push(&branch_name);
+
+            let delete_output = Command::new("git")
+                .current_dir(&self.repo_dir)
+                .args(&delete_args)
+                .output()
+                .context("Failed to delete branch")?;
+
+            if !delete_output.status.success() {
+                let stderr = String::from_utf8_lossy(&delete_output.stderr);
+                outlnc!(
+                    self,
+                    Color::Yellow,
+                    "Warning: Failed to delete branch: {}",
+                    stderr.trim()
+                );
+            } else {
+                outlnc!(
+                    self,
+                    Color::Green,
+                    "Sandbox and branch cleaned up successfully."
+                );
+            }
+        } else {
+            outlnc!(
+                self,
+                Color::Green,
+                "Sandbox removed. Branch {} kept (has commits).",
+                branch_name
+            );
+        }
 
         Ok(())
     }

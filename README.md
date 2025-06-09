@@ -5,7 +5,7 @@
 
 # godo
 
-**Instant parallel sandboxes for any Git project on macOS**
+**Fast parallel sandboxes for any Git project**
 
 `godo` spins up isolated, copy‑on‑write workspaces (APFS `clonefile` + `git
 worktree`) so you can run tests, generators, or one‑off tools in parallel
@@ -16,8 +16,8 @@ committed to a branch you can merge whenever you like.
 
 ## Community
 
-Want to contribute? Have ideas or feature requests? Come chat with me and other
-users about this tool on [Discord](https://discord.gg/fHmRmuBDxF). 
+Want to contribute? Have ideas or feature requests? Come tell us about it on
+[Discord](https://discord.gg/fHmRmuBDxF). 
 
 ---
 
@@ -31,7 +31,7 @@ $ godo run format cargo fmt
 1. A worktree appears in `~/.godo/format`.
 2. `cargo fmt` runs there, touching only CoW copies.
 3. The tool prompts you for a commit message and writes changes to `godo/format`.
-4. The sandbox is deleted (pass `--persist` to keep it).
+4. The sandbox is deleted (pass `--keep` to keep it).
 
 ---
 
@@ -43,7 +43,7 @@ $ godo run format cargo fmt
 * By default every untracked item-even those in `.gitignore` - is copied into the
   sandbox using APFS copy‑on‑write.  Limit what is copied with `--copy`.
 * Results land on branch `godo/<name>`.
-* The sandbox is automatically removed unless you keep it with `--persist`.
+* The sandbox is automatically removed unless you keep it with `--keep`.
 
 ---
 
@@ -59,10 +59,10 @@ Priority: `--dir` flag > `GODO_DIR` env var > default `~/.godo`
 ### `godo run`
 
 ```
-godo run [--persist] [--copy <glob>]... <name> [COMMAND]
+godo run [--keep] [--copy <glob>]... <name> [COMMAND]
 ```
 
-* `--persist` - keep the sandbox after the command exits.  Handy for manual
+* `--keep` - keep the sandbox after the command exits.  Handy for manual
   inspection or re‑runs.
 * `--copy <glob>` - copy only directories that match `glob` into the sandbox.
   You can specify this flag multiple times.  If you omit it, **all** untracked
@@ -74,7 +74,7 @@ godo run [--persist] [--copy <glob>]... <name> [COMMAND]
 
 ### `godo list`
 
-Shows existing sandboxes that are still on disk (either running or created with `--persist`).
+Shows existing sandboxes that are still on disk (either running or created with `--keep`).
 
 ### `godo rm <name>`
 
@@ -115,7 +115,7 @@ cargo install godo
 5. **Commit results** - switches to `godo/<name>`, stages changes, prompts for
    a commit message, and writes the commit. The branch is already attached to
    the parent repository.
-6. **Cleanup** - unless `--persist` was specified, `godo` runs `git worktree
+6. **Cleanup** - unless `--keep` was specified, `godo` runs `git worktree
    remove --force ~/.godo/<name>` and deletes the sandbox directory.
 
 
