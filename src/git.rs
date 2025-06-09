@@ -56,6 +56,45 @@ pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str
     Ok(())
 }
 
+pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+    let worktree_path_str = worktree_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
+
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path_str);
+
+    match run_git(repo_path, &args) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Check if the error is because the worktree doesn't exist
+            let error_msg = e.to_string();
+            if error_msg.contains("is not a working tree") {
+                // Worktree already removed, not an error
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result<()> {
+    let mut args = vec!["branch"];
+    if force {
+        args.push("-D");
+    } else {
+        args.push("-d");
+    }
+    args.push(branch_name);
+
+    run_git(repo_path, &args)?;
+    Ok(())
+}
+
 pub fn worktree_has_commits(worktree_path: &Path) -> Result<bool> {
     // Get the current branch name
     let branch_output = run_git(worktree_path, &["branch", "--show-current"])?;
@@ -470,6 +509,159 @@ mod tests {
             &repo_path,
             &["worktree", "remove", worktree_path.to_str().unwrap()],
         )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_worktree() -> Result<()> {
+        let (temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Create a worktree
+        let worktree_path = temp_dir.path().join("test-worktree");
+        create_worktree(&repo_path, &worktree_path, "test-branch")?;
+
+        // Verify worktree exists
+        assert!(worktree_path.exists());
+
+        // Remove the worktree
+        remove_worktree(&repo_path, &worktree_path, false)?;
+
+        // Verify worktree is removed
+        assert!(!worktree_path.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_worktree_with_uncommitted_changes() -> Result<()> {
+        let (temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Create a worktree
+        let worktree_path = temp_dir.path().join("test-worktree");
+        create_worktree(&repo_path, &worktree_path, "test-branch")?;
+
+        // Add uncommitted changes
+        fs::write(worktree_path.join("uncommitted.txt"), "uncommitted content")?;
+        run_git(&worktree_path, &["add", "uncommitted.txt"])?;
+
+        // Try to remove without force - should fail
+        let result = remove_worktree(&repo_path, &worktree_path, false);
+        assert!(result.is_err());
+
+        // Verify worktree still exists
+        assert!(worktree_path.exists());
+
+        // Remove with force - should succeed
+        remove_worktree(&repo_path, &worktree_path, true)?;
+
+        // Verify worktree is removed
+        assert!(!worktree_path.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_worktree_already_removed() -> Result<()> {
+        let (temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Try to remove a non-existent worktree - should not error
+        let worktree_path = temp_dir.path().join("non-existent-worktree");
+        let result = remove_worktree(&repo_path, &worktree_path, false);
+
+        // Should succeed (we handle "is not a working tree" as success)
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_branch() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Create a new branch
+        run_git(&repo_path, &["branch", "test-branch"])?;
+
+        // Verify branch exists
+        assert!(has_branch(&repo_path, "test-branch")?);
+
+        // Delete the branch
+        delete_branch(&repo_path, "test-branch", false)?;
+
+        // Verify branch is deleted
+        assert!(!has_branch(&repo_path, "test-branch")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_branch_with_unmerged_commits() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Create and switch to a new branch
+        run_git(&repo_path, &["checkout", "-b", "feature-branch"])?;
+
+        // Make a commit on the feature branch
+        fs::write(repo_path.join("feature.txt"), "feature content")?;
+        run_git(&repo_path, &["add", "feature.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Feature commit"])?;
+
+        // Switch back to main
+        run_git(&repo_path, &["checkout", "main"])?;
+
+        // Try to delete without force - should fail
+        let result = delete_branch(&repo_path, "feature-branch", false);
+        assert!(result.is_err());
+
+        // Verify branch still exists
+        assert!(has_branch(&repo_path, "feature-branch")?);
+
+        // Delete with force - should succeed
+        delete_branch(&repo_path, "feature-branch", true)?;
+
+        // Verify branch is deleted
+        assert!(!has_branch(&repo_path, "feature-branch")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_branch_nonexistent() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create an initial commit
+        fs::write(repo_path.join("README.md"), "# Test Repo")?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Try to delete a non-existent branch - should fail
+        let result = delete_branch(&repo_path, "nonexistent-branch", false);
+        assert!(result.is_err());
 
         Ok(())
     }

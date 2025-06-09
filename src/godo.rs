@@ -236,37 +236,19 @@ impl Godo {
         };
 
         // Try to remove the worktree
-        let sandbox_path_str = sandbox_path.to_string_lossy();
-        let mut remove_args = vec!["worktree", "remove"];
-        if force {
-            remove_args.push("--force");
-        }
-        remove_args.push(&sandbox_path_str);
-
-        let remove_output = Command::new("git")
-            .current_dir(&self.repo_dir)
-            .args(&remove_args)
-            .output()
-            .context("Failed to remove worktree")?;
-
-        if !remove_output.status.success() {
-            let stderr = String::from_utf8_lossy(&remove_output.stderr);
-
-            // Check if it's already been removed
-            if stderr.contains("is not a working tree") {
-                // Worktree already removed, just clean up the directory if it exists
-                if sandbox_path.exists() {
-                    fs::remove_dir_all(&sandbox_path)
-                        .context("Failed to remove sandbox directory")?;
-                }
-            } else {
+        match git::remove_worktree(&self.repo_dir, &sandbox_path, force) {
+            Ok(_) => {
+                // Worktree removed successfully
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
                 outlnc!(
                     self,
                     Color::Yellow,
                     "Cannot remove worktree: {}",
-                    stderr.trim()
+                    error_msg.trim()
                 );
-                if !force {
+                if !force && error_msg.contains("uncommitted") {
                     outlnc!(
                         self,
                         Color::Yellow,
@@ -278,36 +260,29 @@ impl Godo {
             }
         }
 
+        // Clean up the directory if it still exists (in case git didn't remove it completely)
+        if sandbox_path.exists() {
+            fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
+        }
+
         // Only delete the branch if there were no commits or if forced
         if !has_commits || force {
-            let mut delete_args = vec!["branch"];
-            if force {
-                delete_args.push("-D");
-            } else {
-                delete_args.push("-d");
-            }
-            delete_args.push(&branch_name);
-
-            let delete_output = Command::new("git")
-                .current_dir(&self.repo_dir)
-                .args(&delete_args)
-                .output()
-                .context("Failed to delete branch")?;
-
-            if !delete_output.status.success() {
-                let stderr = String::from_utf8_lossy(&delete_output.stderr);
-                outlnc!(
-                    self,
-                    Color::Yellow,
-                    "Warning: Failed to delete branch: {}",
-                    stderr.trim()
-                );
-            } else {
-                outlnc!(
-                    self,
-                    Color::Green,
-                    "Sandbox and branch cleaned up successfully."
-                );
+            match git::delete_branch(&self.repo_dir, &branch_name, force) {
+                Ok(_) => {
+                    outlnc!(
+                        self,
+                        Color::Green,
+                        "Sandbox and branch cleaned up successfully."
+                    );
+                }
+                Err(e) => {
+                    outlnc!(
+                        self,
+                        Color::Yellow,
+                        "Warning: Failed to delete branch: {}",
+                        e.to_string().trim()
+                    );
+                }
             }
         } else {
             outlnc!(
