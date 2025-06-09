@@ -35,6 +35,10 @@ struct Cli {
     #[arg(long, global = true)]
     quiet: bool,
 
+    /// Skip confirmation prompts
+    #[arg(long, global = true)]
+    no_prompt: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -107,7 +111,7 @@ fn main() -> Result<()> {
 
     // Create Godo instance
     let godo =
-        Godo::new(godo_dir, repo_dir, color, cli.quiet).context("Failed to initialize godo")?;
+        Godo::new(godo_dir, repo_dir, color, cli.quiet, cli.no_prompt).context("Failed to initialize godo")?;
 
     match cli.command {
         Commands::Run {

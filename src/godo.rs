@@ -47,6 +47,7 @@ pub struct Godo {
     repo_dir: PathBuf,
     color: bool,
     quiet: bool,
+    no_prompt: bool,
 }
 
 impl Godo {
@@ -55,6 +56,7 @@ impl Godo {
         repo_dir: Option<PathBuf>,
         color: bool,
         quiet: bool,
+        no_prompt: bool,
     ) -> Result<Self> {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
@@ -73,6 +75,7 @@ impl Godo {
             repo_dir,
             color,
             quiet,
+            no_prompt,
         })
     }
 
@@ -83,20 +86,56 @@ impl Godo {
         name: &str,
         command: &[String],
     ) -> Result<()> {
+        // Check for uncommitted changes
+        let status = Command::new("git")
+            .current_dir(&self.repo_dir)
+            .args(["status", "--porcelain"])
+            .output()
+            .context("Failed to check git status")?;
+
+        if !status.status.success() {
+            let stderr = String::from_utf8_lossy(&status.stderr);
+            anyhow::bail!("Failed to check git status: {}", stderr);
+        }
+
+        let status_output = String::from_utf8_lossy(&status.stdout);
+        if !status_output.trim().is_empty() {
+            outlnc!(
+                self,
+                Color::Yellow,
+                "Warning: You have uncommitted changes:"
+            );
+            outlnc!(self, Color::Yellow, "{}", status_output);
+
+            if !self.no_prompt {
+                out!(self, "Continue creating worktree? [y/N] ");
+                io::stdout().flush()?;
+
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+
+                if !response.trim().to_lowercase().starts_with('y') {
+                    outlnc!(self, Color::Red, "Aborted.");
+                    return Ok(());
+                }
+            }
+        }
+
         let sandbox_path = self.godo_dir.join(name);
         outlnc!(
             self,
             Color::Cyan,
-            "Creating sandbox {} at {:?}",
+            "Creating sandbox {} with branch godo/{} at {:?}",
+            name,
             name,
             sandbox_path
         );
 
+        let branch_name = format!("godo/{name}");
         let output = Command::new("git")
             .current_dir(&self.repo_dir)
-            .args(["worktree", "add", "--quiet"])
+            .args(["worktree", "add", "--quiet", "-b", &branch_name])
             .arg(&sandbox_path)
-            .arg("HEAD")
             .output()
             .context("Failed to create git worktree")?;
 
