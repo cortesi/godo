@@ -4,7 +4,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod godo;
-use godo::{Godo, RunOptions};
+use godo::Godo;
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
 
@@ -47,9 +47,9 @@ enum Commands {
         #[arg(long)]
         persist: bool,
 
-        /// Copy only directories that match glob (can be specified multiple times)
-        #[arg(long, value_name = "GLOB")]
-        copy: Vec<String>,
+        /// Exclude directories that match glob (can be specified multiple times)
+        #[arg(long = "exclude", value_name = "GLOB")]
+        excludes: Vec<String>,
 
         /// Name of the sandbox
         name: String,
@@ -79,7 +79,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
     PathBuf::from(path)
 }
-
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -113,18 +112,11 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Run {
             persist,
-            copy,
+            excludes,
             name,
             command,
         } => {
-            let options = RunOptions {
-                persist,
-                copy,
-                name,
-                command,
-            };
-
-            godo.run(&options)?;
+            godo.run(persist, &excludes, &name, &command)?;
         }
         Commands::List => {
             godo.list()?;

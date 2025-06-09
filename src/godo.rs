@@ -42,15 +42,6 @@ macro_rules! outlnc {
     }};
 }
 
-pub struct RunOptions {
-    #[allow(dead_code)]
-    pub persist: bool,
-    #[allow(dead_code)]
-    pub copy: Vec<String>,
-    pub name: String,
-    pub command: Vec<String>,
-}
-
 pub struct Godo {
     godo_dir: PathBuf,
     repo_dir: PathBuf,
@@ -85,13 +76,19 @@ impl Godo {
         })
     }
 
-    pub fn run(&self, options: &RunOptions) -> Result<()> {
-        let sandbox_path = self.godo_dir.join(&options.name);
+    pub fn run(
+        &self,
+        persist: bool,
+        excludes: &[String],
+        name: &str,
+        command: &[String],
+    ) -> Result<()> {
+        let sandbox_path = self.godo_dir.join(name);
         outlnc!(
             self,
             Color::Cyan,
             "Creating sandbox {} at {:?}",
-            options.name,
+            name,
             sandbox_path
         );
 
@@ -110,14 +107,19 @@ impl Godo {
 
         outlnc!(self, Color::Cyan, "Copying files to sandbox...");
 
-        let clone_options = Options::new().overwrite(true).glob("!.git/**");
+        let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
+
+        // Add user-specified excludes with "!" prefix
+        for exclude in excludes {
+            clone_options = clone_options.glob(format!("!{exclude}"));
+        }
 
         clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
             .context("Failed to copy files to sandbox")?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
-        let status = if options.command.is_empty() {
+        let status = if command.is_empty() {
             // Interactive shell
             Command::new(&shell)
                 .current_dir(&sandbox_path)
@@ -125,7 +127,7 @@ impl Godo {
                 .context("Failed to start shell")?
         } else {
             // Run the specified command
-            let command_string = options.command.join(" ");
+            let command_string = command.join(" ");
             Command::new(&shell)
                 .arg("-c")
                 .arg(&command_string)
