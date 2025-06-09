@@ -228,30 +228,12 @@ impl Godo {
         let sandbox_path = self.godo_dir.join(name);
         let branch_name = format!("godo/{name}");
 
-        // Get the initial commit of the branch to check if any commits were made
-        let initial_commit = Command::new("git")
-            .current_dir(&self.repo_dir)
-            .args(["rev-parse", &branch_name])
-            .output()
-            .context("Failed to get branch commit")?;
-
-        if !initial_commit.status.success() {
-            outlnc!(
-                self,
-                Color::Yellow,
-                "Branch {} not found, skipping branch cleanup",
-                branch_name
-            );
-            // Still try to remove the worktree directory if it exists
-            if sandbox_path.exists() {
-                fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
-            }
-            return Ok(());
-        }
-
-        let initial_commit_sha = String::from_utf8_lossy(&initial_commit.stdout)
-            .trim()
-            .to_string();
+        // Check if the worktree exists and has commits before trying to remove it
+        let has_commits = if sandbox_path.exists() {
+            git::worktree_has_commits(&sandbox_path).unwrap_or(false)
+        } else {
+            false
+        };
 
         // Try to remove the worktree
         let sandbox_path_str = sandbox_path.to_string_lossy();
@@ -269,36 +251,35 @@ impl Godo {
 
         if !remove_output.status.success() {
             let stderr = String::from_utf8_lossy(&remove_output.stderr);
-            outlnc!(
-                self,
-                Color::Yellow,
-                "Cannot remove worktree: {}",
-                stderr.trim()
-            );
-            if !force {
+
+            // Check if it's already been removed
+            if stderr.contains("is not a working tree") {
+                // Worktree already removed, just clean up the directory if it exists
+                if sandbox_path.exists() {
+                    fs::remove_dir_all(&sandbox_path)
+                        .context("Failed to remove sandbox directory")?;
+                }
+            } else {
                 outlnc!(
                     self,
                     Color::Yellow,
-                    "Worktree has uncommitted changes. Use 'godo rm {} --force' to force removal.",
-                    name
+                    "Cannot remove worktree: {}",
+                    stderr.trim()
                 );
+                if !force {
+                    outlnc!(
+                        self,
+                        Color::Yellow,
+                        "Worktree has uncommitted changes. Use 'godo rm {} --force' to force removal.",
+                        name
+                    );
+                }
+                return Ok(());
             }
-            return Ok(());
         }
 
-        // Check if the branch has any new commits
-        let current_commit = Command::new("git")
-            .current_dir(&self.repo_dir)
-            .args(["rev-parse", &branch_name])
-            .output()
-            .context("Failed to get current branch commit")?;
-
-        let current_commit_sha = String::from_utf8_lossy(&current_commit.stdout)
-            .trim()
-            .to_string();
-
-        if initial_commit_sha == current_commit_sha || force {
-            // No new commits or forced deletion, delete the branch
+        // Only delete the branch if there were no commits or if forced
+        if !has_commits || force {
             let mut delete_args = vec!["branch"];
             if force {
                 delete_args.push("-D");
