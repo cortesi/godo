@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// Run a git command with the given arguments in the specified directory.
@@ -18,6 +18,19 @@ fn run_git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     }
 
     Ok(output)
+}
+
+pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = start_dir;
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
+        }
+    }
 }
 
 pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
@@ -662,6 +675,36 @@ mod tests {
         // Try to delete a non-existent branch - should fail
         let result = delete_branch(&repo_path, "nonexistent-branch", false);
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Create a git repo
+        run_git(&root_path, &["init"])?;
+
+        // Test from root directory
+        assert_eq!(find_root(&root_path), Some(root_path.clone()));
+
+        // Create nested directories
+        let sub_dir = root_path.join("src");
+        fs::create_dir(&sub_dir)?;
+        let nested_dir = sub_dir.join("nested");
+        fs::create_dir(&nested_dir)?;
+
+        // Test from subdirectory
+        assert_eq!(find_root(&sub_dir), Some(root_path.clone()));
+
+        // Test from deeply nested directory
+        assert_eq!(find_root(&nested_dir), Some(root_path.clone()));
+
+        // Test from non-git directory
+        let non_git_dir = temp_dir.path().parent().unwrap();
+        assert_eq!(find_root(non_git_dir), None);
 
         Ok(())
     }

@@ -51,7 +51,7 @@ impl Godo {
         } else {
             // Find git root from current directory
             let current_dir = std::env::current_dir().context("Failed to get current directory")?;
-            find_git_root(&current_dir).context("Not in a git repository")?
+            git::find_root(&current_dir).context("Not in a git repository")?
         };
 
         Ok(Self {
@@ -308,19 +308,6 @@ impl Godo {
             };
 
             Box::new(StandardStream::stdout(color_choice))
-        }
-    }
-}
-
-fn find_git_root(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = start_dir;
-    loop {
-        if current.join(".git").exists() {
-            return Some(current.to_path_buf());
-        }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
         }
     }
 }
