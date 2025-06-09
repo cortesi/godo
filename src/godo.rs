@@ -8,6 +8,30 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::git;
 
+/// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
+fn validate_sandbox_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("Sandbox name cannot be empty");
+    }
+
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!(
+            "Invalid sandbox name '{}': names can only contain letters, numbers, hyphens, and underscores",
+            name
+        );
+    }
+
+    Ok(())
+}
+
+/// Returns the git branch name for a given sandbox name
+fn branch_name(sandbox_name: &str) -> String {
+    format!("godo/{}", sandbox_name)
+}
+
 macro_rules! out {
     ($self:expr, $($arg:tt)*) => {{
         use std::io::Write;
@@ -67,9 +91,12 @@ impl Godo {
         &self,
         keep: bool,
         excludes: &[String],
-        name: &str,
+        sandbox_name: &str,
         command: &[String],
     ) -> Result<()> {
+        // Validate sandbox name
+        validate_sandbox_name(sandbox_name)?;
+
         // Check for uncommitted changes
         if git::has_uncommitted_changes(&self.repo_dir)? {
             outlnc!(
@@ -91,18 +118,18 @@ impl Godo {
             }
         }
 
-        let sandbox_path = self.godo_dir.join(name);
+        let sandbox_path = self.godo_dir.join(sandbox_name);
         outlnc!(
             self,
             Color::Cyan,
-            "Creating sandbox {} with branch godo/{} at {:?}",
-            name,
-            name,
+            "Creating sandbox {} with branch {} at {:?}",
+            sandbox_name,
+            branch_name(sandbox_name),
             sandbox_path
         );
 
-        let branch_name = format!("godo/{name}");
-        git::create_worktree(&self.repo_dir, &sandbox_path, &branch_name)?;
+        let branch = branch_name(sandbox_name);
+        git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
 
         outlnc!(self, Color::Cyan, "Copying files to sandbox...");
 
@@ -141,7 +168,7 @@ impl Godo {
 
         // Clean up if not keeping
         if !keep {
-            self.cleanup_sandbox(name, false)?;
+            self.cleanup_sandbox(sandbox_name, false)?;
         }
 
         Ok(())
@@ -164,6 +191,9 @@ impl Godo {
     }
 
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
+        // Validate sandbox name
+        validate_sandbox_name(name)?;
+
         let sandbox_path = self.godo_dir.join(name);
 
         // Check if sandbox exists
@@ -226,7 +256,7 @@ impl Godo {
         outlnc!(self, Color::Cyan, "Cleaning up sandbox {}...", name);
 
         let sandbox_path = self.godo_dir.join(name);
-        let branch_name = format!("godo/{name}");
+        let branch = branch_name(name);
 
         // Check if the worktree exists and has commits before trying to remove it
         let has_commits = if sandbox_path.exists() {
@@ -267,7 +297,7 @@ impl Godo {
 
         // Only delete the branch if there were no commits or if forced
         if !has_commits || force {
-            match git::delete_branch(&self.repo_dir, &branch_name, force) {
+            match git::delete_branch(&self.repo_dir, &branch, force) {
                 Ok(_) => {
                     outlnc!(
                         self,
@@ -289,7 +319,7 @@ impl Godo {
                 self,
                 Color::Green,
                 "Sandbox removed. Branch {} kept (has commits).",
-                branch_name
+                branch
             );
         }
 
