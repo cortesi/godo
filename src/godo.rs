@@ -4,7 +4,43 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use termcolor::{ColorChoice, StandardStream, WriteColor};
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+
+macro_rules! out {
+    ($self:expr, $($arg:tt)*) => {{
+        use std::io::Write;
+        let mut stdout = $self.stdout();
+        write!(stdout, $($arg)*)?;
+    }};
+}
+
+macro_rules! outln {
+    ($self:expr, $($arg:tt)*) => {{
+        use std::io::Write;
+        let mut stdout = $self.stdout();
+        writeln!(stdout, $($arg)*)?;
+    }};
+}
+
+macro_rules! outc {
+    ($self:expr, $color:expr, $($arg:tt)*) => {{
+        use std::io::Write;
+        let mut stdout = $self.stdout();
+        stdout.set_color(ColorSpec::new().set_fg(Some($color)))?;
+        write!(stdout, $($arg)*)?;
+        stdout.reset()?;
+    }};
+}
+
+macro_rules! outlnc {
+    ($self:expr, $color:expr, $($arg:tt)*) => {{
+        use std::io::Write;
+        let mut stdout = $self.stdout();
+        stdout.set_color(ColorSpec::new().set_fg(Some($color)))?;
+        writeln!(stdout, $($arg)*)?;
+        stdout.reset()?;
+    }};
+}
 
 pub struct RunOptions {
     #[allow(dead_code)]
@@ -51,12 +87,13 @@ impl Godo {
 
     pub fn run(&self, options: &RunOptions) -> Result<()> {
         let sandbox_path = self.godo_dir.join(&options.name);
-        if !self.quiet {
-            println!(
-                "Creating worktree for '{}' at {:?}",
-                options.name, sandbox_path
-            );
-        }
+        outlnc!(
+            self,
+            Color::Cyan,
+            "Creating sandbox {} at {:?}",
+            options.name,
+            sandbox_path
+        );
 
         let output = Command::new("git")
             .current_dir(&self.repo_dir)
@@ -71,18 +108,12 @@ impl Godo {
             anyhow::bail!("Failed to create worktree: {}", stderr);
         }
 
-        if !self.quiet {
-            println!("Copying untracked files to sandbox...");
-        }
+        outlnc!(self, Color::Cyan, "Copying files to sandbox...");
 
         let clone_options = Options::new().overwrite(true).glob("!.git/**");
 
         clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
             .context("Failed to copy files to sandbox")?;
-
-        if !self.quiet {
-            println!("Running in sandbox: {sandbox_path:?}");
-        }
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
@@ -103,16 +134,19 @@ impl Godo {
                 .context("Failed to run command")?
         };
 
-        if !status.success() && !self.quiet {
-            println!("Command exited with status: {status}");
+        if !status.success() {
+            outlnc!(self, Color::Red, "Command exited with status: {status}");
         }
         Ok(())
     }
 
     pub fn list(&self) -> Result<()> {
-        use std::io::Write;
-        let mut stdout = self.stdout();
-        writeln!(stdout, "Listing sandboxes in {:?}", self.godo_dir)?;
+        outlnc!(
+            self,
+            Color::Cyan,
+            "Listing sandboxes in {:?}",
+            self.godo_dir
+        );
 
         // TODO: Implement list functionality
         // 1. Read sandboxes directory
@@ -123,7 +157,13 @@ impl Godo {
     }
 
     pub fn remove(&self, name: &str) -> Result<()> {
-        println!("Removing sandbox '{}' from {:?}", name, self.godo_dir);
+        outlnc!(
+            self,
+            Color::Yellow,
+            "Removing sandbox {} from {:?}",
+            name,
+            self.godo_dir
+        );
 
         // TODO: Implement remove functionality
         // 1. Check if sandbox exists
@@ -134,7 +174,12 @@ impl Godo {
     }
 
     pub fn prune(&self) -> Result<()> {
-        println!("Pruning sandboxes in {:?}", self.godo_dir);
+        outlnc!(
+            self,
+            Color::Yellow,
+            "Pruning sandboxes in {:?}",
+            self.godo_dir
+        );
 
         // TODO: Implement prune functionality
         // 1. List all sandboxes
