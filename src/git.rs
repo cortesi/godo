@@ -1,35 +1,47 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
-pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
-    let status = Command::new("git")
+/// Run a git command with the given arguments in the specified directory.
+/// Returns the output if successful, otherwise returns an error with the full command details.
+fn run_git(repo_path: &Path, args: &[&str]) -> Result<Output> {
+    let output = Command::new("git")
         .current_dir(repo_path)
-        .args(["status", "--porcelain"])
+        .args(args)
         .output()
-        .context("Failed to check git status")?;
+        .with_context(|| format!("Failed to execute git command: git {}", args.join(" ")))?;
 
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        anyhow::bail!("Failed to check git status: {}", stderr);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let command = format!("git {}", args.join(" "));
+        anyhow::bail!("Git command failed: {}\nError: {}", command, stderr.trim());
     }
 
-    let status_output = String::from_utf8_lossy(&status.stdout);
+    Ok(output)
+}
+
+pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
+    let output = run_git(repo_path, &["status", "--porcelain"])?;
+    let status_output = String::from_utf8_lossy(&output.stdout);
     Ok(!status_output.trim().is_empty())
 }
 
 pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str) -> Result<()> {
-    let output = Command::new("git")
-        .current_dir(repo_path)
-        .args(["worktree", "add", "--quiet", "-b", branch_name])
-        .arg(worktree_path)
-        .output()
-        .context("Failed to create git worktree")?;
+    let worktree_path_str = worktree_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to create worktree: {}", stderr);
-    }
+    run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            branch_name,
+            worktree_path_str,
+        ],
+    )?;
 
     Ok(())
 }
@@ -45,21 +57,11 @@ mod tests {
         let repo_path = temp_dir.path().to_path_buf();
 
         // Initialize git repository
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["init"])
-            .output()?;
+        run_git(&repo_path, &["init"])?;
 
         // Configure git user for commits
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["config", "user.email", "test@example.com"])
-            .output()?;
-
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["config", "user.name", "Test User"])
-            .output()?;
+        run_git(&repo_path, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo_path, &["config", "user.name", "Test User"])?;
 
         Ok((temp_dir, repo_path))
     }
@@ -70,14 +72,8 @@ mod tests {
 
         // Create and commit a file
         fs::write(repo_path.join("test.txt"), "initial content")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "test.txt"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "test.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
         // Should have no uncommitted changes
         assert!(!has_uncommitted_changes(&repo_path)?);
@@ -91,14 +87,8 @@ mod tests {
 
         // Create and commit a file
         fs::write(repo_path.join("test.txt"), "initial content")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "test.txt"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "test.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
         // Modify the file
         fs::write(repo_path.join("test.txt"), "modified content")?;
@@ -115,14 +105,8 @@ mod tests {
 
         // Create and commit a file
         fs::write(repo_path.join("test.txt"), "initial content")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "test.txt"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "test.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
         // Create a new untracked file
         fs::write(repo_path.join("untracked.txt"), "new file")?;
@@ -139,21 +123,12 @@ mod tests {
 
         // Create and commit a file
         fs::write(repo_path.join("test.txt"), "initial content")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "test.txt"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "test.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
         // Create a new file and stage it
         fs::write(repo_path.join("staged.txt"), "staged content")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "staged.txt"])
-            .output()?;
+        run_git(&repo_path, &["add", "staged.txt"])?;
 
         // Should detect uncommitted changes (staged files)
         assert!(has_uncommitted_changes(&repo_path)?);
@@ -167,14 +142,8 @@ mod tests {
 
         // Create an initial commit
         fs::write(repo_path.join("README.md"), "# Test Repo")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "README.md"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
         // Create a worktree
         let worktree_path = repo_path.parent().unwrap().join("test-worktree");
@@ -186,59 +155,50 @@ mod tests {
         assert!(worktree_path.join("README.md").exists());
 
         // Verify branch was created
-        let branches = Command::new("git")
-            .current_dir(&repo_path)
-            .args(["branch", "--list", "test-branch"])
-            .output()?;
+        let branches = run_git(&repo_path, &["branch", "--list", "test-branch"])?;
         let branch_output = String::from_utf8_lossy(&branches.stdout);
         assert!(branch_output.contains("test-branch"));
 
         // Clean up worktree
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["worktree", "remove", worktree_path.to_str().unwrap()])
-            .output()?;
+        run_git(
+            &repo_path,
+            &["worktree", "remove", worktree_path.to_str().unwrap()],
+        )?;
 
         Ok(())
     }
 
     #[test]
     fn test_create_worktree_duplicate_branch() -> Result<()> {
-        let (_temp_dir, repo_path) = setup_test_repo()?;
+        let (temp_dir, repo_path) = setup_test_repo()?;
 
         // Create an initial commit
         fs::write(repo_path.join("README.md"), "# Test Repo")?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["add", "README.md"])
-            .output()?;
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
+        run_git(&repo_path, &["add", "README.md"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
 
-        // Create first worktree
-        let worktree_path1 = repo_path.parent().unwrap().join("test-worktree-1");
+        // Create first worktree using temp_dir as the base
+        let worktree_path1 = temp_dir.path().join("test-worktree-1");
         create_worktree(&repo_path, &worktree_path1, "duplicate-branch")?;
 
-        // Try to create second worktree with same branch name
-        let worktree_path2 = repo_path.parent().unwrap().join("test-worktree-2");
+        // Try to create second worktree with same branch name but different path
+        let worktree_path2 = temp_dir.path().join("test-worktree-2");
         let result = create_worktree(&repo_path, &worktree_path2, "duplicate-branch");
 
-        // Should fail
+        // Should fail because branch already exists
         assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Failed to create worktree")
+            error_msg.contains("Git command failed") && error_msg.contains("already exists"),
+            "Expected error about branch already existing, got: {}",
+            error_msg
         );
 
         // Clean up
-        Command::new("git")
-            .current_dir(&repo_path)
-            .args(["worktree", "remove", worktree_path1.to_str().unwrap()])
-            .output()?;
+        run_git(
+            &repo_path,
+            &["worktree", "remove", worktree_path1.to_str().unwrap()],
+        )?;
 
         Ok(())
     }
