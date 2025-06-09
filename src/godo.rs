@@ -1,11 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use clonetree::{Options, clone_tree};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use termcolor::{ColorChoice, StandardStream, WriteColor};
 
 pub struct RunOptions {
+    #[allow(dead_code)]
     pub persist: bool,
+    #[allow(dead_code)]
     pub copy: Vec<String>,
     pub name: String,
     pub command: Vec<String>,
@@ -32,16 +36,71 @@ impl Godo {
     }
 
     pub fn run(&self, options: &RunOptions) -> Result<()> {
-        println!("Running sandbox '{}' in {:?}", options.name, self.godo_dir);
-        println!("Repository directory: {:?}", self.repo_dir);
+        let sandbox_path = self.godo_dir.join("sandboxes").join(&options.name);
 
-        // TODO: Implement run functionality
-        // 1. Check we're in a git repo
-        // 2. Create worktree
-        // 3. Copy resources
-        // 4. Run command or shell
-        // 5. Commit results
-        // 6. Cleanup (unless --persist)
+        // Step 1: Check we're in a git repo (already done in main.rs)
+
+        // Step 2: Create worktree
+        if !self.quiet {
+            println!(
+                "Creating worktree for '{}' at {:?}",
+                options.name, sandbox_path
+            );
+        }
+
+        let output = Command::new("git")
+            .current_dir(&self.repo_dir)
+            .args(["worktree", "add", "--quiet"])
+            .arg(&sandbox_path)
+            .arg("HEAD")
+            .output()
+            .context("Failed to create git worktree")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to create worktree: {}", stderr);
+        }
+
+        // Step 3: Copy resources using clonetree
+        if !self.quiet {
+            println!("Copying untracked files to sandbox...");
+        }
+
+        let clone_options = Options::new().overwrite(true).glob("!.git/**");
+
+        clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
+            .context("Failed to copy files to sandbox")?;
+
+        // Step 4: Run command or shell
+        if !self.quiet {
+            println!("Running in sandbox: {sandbox_path:?}");
+        }
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+
+        let status = if options.command.is_empty() {
+            // Interactive shell
+            Command::new(&shell)
+                .current_dir(&sandbox_path)
+                .status()
+                .context("Failed to start shell")?
+        } else {
+            // Run the specified command
+            let command_string = options.command.join(" ");
+            Command::new(&shell)
+                .arg("-c")
+                .arg(&command_string)
+                .current_dir(&sandbox_path)
+                .status()
+                .context("Failed to run command")?
+        };
+
+        if !status.success() && !self.quiet {
+            println!("Command exited with status: {status}");
+        }
+
+        // TODO: Step 5: Commit results
+        // TODO: Step 6: Cleanup (unless --persist)
 
         Ok(())
     }
@@ -134,4 +193,3 @@ impl WriteColor for NoopWriter {
         Ok(())
     }
 }
-
