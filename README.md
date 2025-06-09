@@ -1,3 +1,8 @@
+![Discord](https://img.shields.io/discord/1381424110831145070?style=flat-square&logo=rust&link=https%3A%2F%2Fdiscord.gg%2FfHmRmuBDxF)
+[![Crates.io](https://img.shields.io/crates/v/godo)](https://crates.io/crates/godo)
+[![docs.rs](https://img.shields.io/docsrs/godo)](https://docs.rs/godo)
+
+
 # godo
 
 **Instant parallel sandboxes for any Git project on macOS**
@@ -6,6 +11,13 @@
 worktree`) so you can run tests, generators, or one‑off tools in parallel
 without touching your main working copy. When the task finishes, changes are
 committed to a branch you can merge whenever you like.
+
+---
+
+## Community
+
+Want to contribute? Have ideas or feature requests? Come chat with me and other
+users about this tool on [Discord](https://discord.gg/fHmRmuBDxF). 
 
 ---
 
@@ -105,4 +117,5 @@ cargo install godo
    the parent repository.
 6. **Cleanup** - unless `--persist` was specified, `godo` runs `git worktree
    remove --force ~/.godo/<name>` and deletes the sandbox directory.
+
 
