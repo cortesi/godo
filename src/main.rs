@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod godo;
 use godo::Godo;
@@ -85,6 +86,24 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 fn main() -> Result<()> {
+    // Handle errors with custom formatting
+    if let Err(e) = run() {
+        // Reset any existing colors
+        print!("\x1b[0m");
+        let _ = std::io::stdout().flush();
+
+        // Print error in orange to stderr
+        let mut stderr = StandardStream::stderr(ColorChoice::Auto);
+        let _ = stderr.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(255, 165, 0))));
+        eprintln!("Error: {:#}", e);
+        let _ = stderr.reset();
+
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Determine godo directory (priority: CLI flag > env var > default)
@@ -110,8 +129,8 @@ fn main() -> Result<()> {
     };
 
     // Create Godo instance
-    let godo =
-        Godo::new(godo_dir, repo_dir, color, cli.quiet, cli.no_prompt).context("Failed to initialize godo")?;
+    let godo = Godo::new(godo_dir, repo_dir, color, cli.quiet, cli.no_prompt)
+        .context("Failed to initialize godo")?;
 
     match cli.command {
         Commands::Run {
