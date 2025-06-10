@@ -50,7 +50,7 @@ fn project_name(repo_path: &Path) -> Result<String> {
             // For root paths or paths without a file name, try to use the last component
             repo_path
                 .components()
-                .last()
+                .next_back()
                 .and_then(|c| match c {
                     std::path::Component::Normal(name) => name.to_str(),
                     _ => None,
@@ -69,7 +69,7 @@ fn project_name(repo_path: &Path) -> Result<String> {
 
 /// Returns the git branch name for a given sandbox name
 fn branch_name(sandbox_name: &str) -> String {
-    format!("godo/{}", sandbox_name)
+    format!("godo/{sandbox_name}")
 }
 
 macro_rules! out {
@@ -492,7 +492,7 @@ mod tests {
         ];
 
         for (input, expected) in test_cases {
-            assert_eq!(clean_name(input), expected, "Failed for input: '{}'", input);
+            assert_eq!(clean_name(input), expected, "Failed for input: '{input}'");
         }
     }
 
@@ -518,7 +518,7 @@ mod tests {
 
         for (path, expected) in test_cases {
             let result = project_name(&PathBuf::from(path)).unwrap();
-            assert_eq!(result, expected, "Failed for path: '{}'", path);
+            assert_eq!(result, expected, "Failed for path: '{path}'");
         }
     }
 
@@ -551,16 +551,14 @@ mod tests {
         for name in valid_names {
             assert!(
                 validate_sandbox_name(name).is_ok(),
-                "Expected '{}' to be valid",
-                name
+                "Expected '{name}' to be valid"
             );
         }
 
         for name in invalid_names {
             assert!(
                 validate_sandbox_name(name).is_err(),
-                "Expected '{}' to be invalid",
-                name
+                "Expected '{name}' to be invalid"
             );
         }
     }
@@ -579,8 +577,7 @@ mod tests {
             assert_eq!(
                 branch_name(sandbox),
                 expected,
-                "Failed for sandbox name: '{}'",
-                sandbox
+                "Failed for sandbox name: '{sandbox}'"
             );
         }
     }
