@@ -27,6 +27,46 @@ fn validate_sandbox_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Cleans a name to only contain allowed characters (a-zA-Z0-9-_)
+/// Non-allowed characters are replaced with hyphens
+fn clean_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Extracts and cleans the project name from a git repository path
+fn project_name(repo_path: &Path) -> Result<String> {
+    let name = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_else(|| {
+            // For root paths or paths without a file name, try to use the last component
+            repo_path
+                .components()
+                .last()
+                .and_then(|c| match c {
+                    std::path::Component::Normal(name) => name.to_str(),
+                    _ => None,
+                })
+                .unwrap_or("root")
+        });
+
+    let cleaned = clean_name(name);
+
+    if cleaned.is_empty() {
+        anyhow::bail!("Could not derive a valid project name from repository path");
+    }
+
+    Ok(cleaned)
+}
+
 /// Returns the git branch name for a given sandbox name
 fn branch_name(sandbox_name: &str) -> String {
     format!("godo/{}", sandbox_name)
@@ -87,6 +127,17 @@ impl Godo {
         })
     }
 
+    /// Get the project directory path within the godo directory
+    fn project_dir(&self) -> Result<PathBuf> {
+        let project = project_name(&self.repo_dir)?;
+        Ok(self.godo_dir.join(&project))
+    }
+
+    /// Calculate the path for a sandbox given its name
+    fn sandbox_path(&self, sandbox_name: &str) -> Result<PathBuf> {
+        Ok(self.project_dir()?.join(sandbox_name))
+    }
+
     pub fn run(
         &self,
         keep: bool,
@@ -118,7 +169,12 @@ impl Godo {
             }
         }
 
-        let sandbox_path = self.godo_dir.join(sandbox_name);
+        let sandbox_path = self.sandbox_path(sandbox_name)?;
+
+        // Ensure project directory exists
+        let project_dir = self.project_dir()?;
+        fs::create_dir_all(&project_dir)?;
+
         outlnc!(
             self,
             Color::Cyan,
@@ -144,7 +200,6 @@ impl Godo {
             .context("Failed to copy files to sandbox")?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-
         let status = if command.is_empty() {
             // Interactive shell
             Command::new(&shell)
@@ -175,11 +230,15 @@ impl Godo {
     }
 
     pub fn list(&self) -> Result<()> {
+        let project = project_name(&self.repo_dir)?;
+        let project_dir = self.project_dir()?;
+
         outlnc!(
             self,
             Color::Cyan,
-            "Listing sandboxes in {:?}",
-            self.godo_dir
+            "Listing sandboxes for project '{}' in {:?}",
+            project,
+            project_dir
         );
 
         // TODO: Implement list functionality
@@ -194,7 +253,7 @@ impl Godo {
         // Validate sandbox name
         validate_sandbox_name(name)?;
 
-        let sandbox_path = self.godo_dir.join(name);
+        let sandbox_path = self.sandbox_path(name)?;
 
         // Check if sandbox exists
         if !sandbox_path.exists() {
@@ -236,11 +295,15 @@ impl Godo {
     }
 
     pub fn prune(&self) -> Result<()> {
+        let project = project_name(&self.repo_dir)?;
+        let project_dir = self.project_dir()?;
+
         outlnc!(
             self,
             Color::Yellow,
-            "Pruning sandboxes in {:?}",
-            self.godo_dir
+            "Pruning sandboxes for project '{}' in {:?}",
+            project,
+            project_dir
         );
 
         // TODO: Implement prune functionality
@@ -255,7 +318,7 @@ impl Godo {
     fn cleanup_sandbox(&self, name: &str, force: bool) -> Result<()> {
         outlnc!(self, Color::Cyan, "Cleaning up sandbox {}...", name);
 
-        let sandbox_path = self.godo_dir.join(name);
+        let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
 
         // Check if the worktree exists and has commits before trying to remove it
@@ -372,5 +435,158 @@ impl WriteColor for NoopWriter {
 
     fn reset(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_clean_name() {
+        // Test valid characters
+        assert_eq!(clean_name("valid-name"), "valid-name");
+        assert_eq!(clean_name("valid_name"), "valid_name");
+        assert_eq!(clean_name("ValidName123"), "ValidName123");
+        assert_eq!(clean_name("a-b_c123"), "a-b_c123");
+
+        // Test special characters replacement
+        assert_eq!(clean_name("my.project"), "my-project");
+        assert_eq!(clean_name("my project"), "my-project");
+        assert_eq!(clean_name("my@project!"), "my-project-");
+        assert_eq!(clean_name("my/project"), "my-project");
+        assert_eq!(clean_name("my\\project"), "my-project");
+        assert_eq!(clean_name("my:project"), "my-project");
+        assert_eq!(clean_name("my*project"), "my-project");
+        assert_eq!(clean_name("my?project"), "my-project");
+        assert_eq!(clean_name("my\"project"), "my-project");
+        assert_eq!(clean_name("my<project>"), "my-project-");
+        assert_eq!(clean_name("my|project"), "my-project");
+
+        // Test Unicode and non-ASCII characters
+        assert_eq!(clean_name("café"), "caf-");
+        assert_eq!(clean_name("项目"), "--");
+        assert_eq!(clean_name("проект"), "------");
+        assert_eq!(clean_name("🚀rocket"), "-rocket");
+
+        // Test multiple consecutive special characters
+        assert_eq!(clean_name("my...project"), "my---project");
+        assert_eq!(clean_name("my   project"), "my---project");
+        assert_eq!(clean_name("my@#$%project"), "my----project");
+
+        // Test edge cases
+        assert_eq!(clean_name(""), "");
+        assert_eq!(clean_name("-"), "-");
+        assert_eq!(clean_name("_"), "_");
+        assert_eq!(clean_name("---"), "---");
+        assert_eq!(clean_name("@#$%"), "----");
+
+        // Test beginning and ending special characters
+        assert_eq!(clean_name(".project"), "-project");
+        assert_eq!(clean_name("project."), "project-");
+        assert_eq!(clean_name(".project."), "-project-");
+
+        // Test real-world examples
+        assert_eq!(clean_name("my-awesome-project"), "my-awesome-project");
+        assert_eq!(clean_name("MyCompany.Project"), "MyCompany-Project");
+        assert_eq!(clean_name("2024-project"), "2024-project");
+        assert_eq!(clean_name("project (copy)"), "project--copy-");
+        assert_eq!(clean_name("project [v2]"), "project--v2-");
+    }
+
+    #[test]
+    fn test_project_name() {
+        // Test normal project names
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/my-project")).unwrap(),
+            "my-project"
+        );
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/my_project")).unwrap(),
+            "my_project"
+        );
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/MyProject123")).unwrap(),
+            "MyProject123"
+        );
+
+        // Test names with special characters that get replaced
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/my.project")).unwrap(),
+            "my-project"
+        );
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/my project")).unwrap(),
+            "my-project"
+        );
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/my@project!")).unwrap(),
+            "my-project-"
+        );
+
+        // Test edge cases
+        assert_eq!(project_name(&PathBuf::from("/")).unwrap(), "root");
+        assert_eq!(project_name(&PathBuf::from("project")).unwrap(), "project");
+
+        // Test paths that would result in empty cleaned names
+        // Note: "..." becomes "---" which is not empty, so it should succeed
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/...")).unwrap(),
+            "---"
+        );
+
+        // Test that a path with only special chars still produces a valid name
+        assert_eq!(
+            project_name(&PathBuf::from("/home/user/projects/@#$%^&*()")).unwrap(),
+            "---------" // 9 special chars become 9 hyphens
+        );
+    }
+
+    #[test]
+    fn test_validate_sandbox_name() {
+        // Valid names
+        assert!(validate_sandbox_name("test").is_ok());
+        assert!(validate_sandbox_name("test-123").is_ok());
+        assert!(validate_sandbox_name("test_123").is_ok());
+        assert!(validate_sandbox_name("TEST").is_ok());
+        assert!(validate_sandbox_name("a1b2c3").is_ok());
+
+        // Invalid names
+        assert!(validate_sandbox_name("").is_err());
+        assert!(validate_sandbox_name("test space").is_err());
+        assert!(validate_sandbox_name("test.dot").is_err());
+        assert!(validate_sandbox_name("test@symbol").is_err());
+        assert!(validate_sandbox_name("test/slash").is_err());
+    }
+
+    #[test]
+    fn test_branch_name() {
+        assert_eq!(branch_name("test"), "godo/test");
+        assert_eq!(branch_name("feature-123"), "godo/feature-123");
+        assert_eq!(branch_name("my_sandbox"), "godo/my_sandbox");
+    }
+
+    #[test]
+    fn test_sandbox_and_project_paths() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let godo_dir = temp_dir.path().join(".godo");
+        let repo_dir = PathBuf::from("/home/user/projects/my-project");
+
+        // Create a Godo instance
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir), false, false, false).unwrap();
+
+        // Test project_dir method
+        let project_dir = godo.project_dir().unwrap();
+        assert_eq!(project_dir, godo_dir.join("my-project"));
+
+        // Test sandbox_path method
+        let sandbox_path = godo.sandbox_path("test-sandbox").unwrap();
+        assert_eq!(
+            sandbox_path,
+            godo_dir.join("my-project").join("test-sandbox")
+        );
     }
 }
