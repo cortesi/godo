@@ -120,6 +120,7 @@ fn main() -> Result<()> {
 
         // Use the output handler to display the error
         let _ = output.fail(&format!("Error: {e:#}"));
+        let _ = output.finish();
 
         std::process::exit(1);
     }
@@ -140,7 +141,7 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
     let repo_dir = cli.repo_dir.as_ref().map(|repo| expand_tilde(repo));
 
     // Create Godo instance with the same output object
-    let godo = Godo::new(godo_dir, repo_dir, output, cli.no_prompt)
+    let godo = Godo::new(godo_dir, repo_dir, output.clone(), cli.no_prompt)
         .context("Failed to initialize godo")?;
 
     match cli.command {
@@ -163,5 +164,6 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
         }
     }
 
+    output.finish()?;
     Ok(())
 }

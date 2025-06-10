@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clonetree::{Options, clone_tree};
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -132,13 +131,7 @@ impl Godo {
         if git::has_uncommitted_changes(&self.repo_dir)? {
             self.output.warn("Warning: You have uncommitted changes:")?;
             if !self.no_prompt {
-                print!("Continue creating worktree? [y/N] ");
-                io::stdout().flush()?;
-
-                let mut response = String::new();
-                io::stdin().read_line(&mut response)?;
-
-                if !response.trim().to_lowercase().starts_with('y') {
+                if !self.output.confirm("Continue creating worktree? [y/N]")? {
                     self.output.fail("Aborted.")?;
                     return Ok(());
                 }
@@ -234,13 +227,7 @@ impl Godo {
             ))?;
 
             if !self.no_prompt {
-                print!("Continue with removal? [y/N] ");
-                io::stdout().flush()?;
-
-                let mut response = String::new();
-                io::stdin().read_line(&mut response)?;
-
-                if !response.trim().to_lowercase().starts_with('y') {
+                if !self.output.confirm("Continue with removal? [y/N]")? {
                     self.output.fail("Aborted.")?;
                     return Ok(());
                 }
