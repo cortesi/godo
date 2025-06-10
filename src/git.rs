@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// Run a git command with the given arguments in the specified directory.
 /// Returns the output if successful, otherwise returns an error with the full command details.
@@ -105,6 +105,28 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result
     args.push(branch_name);
 
     run_git(repo_path, &args)?;
+    Ok(())
+}
+
+pub fn add_all(repo_path: &Path) -> Result<()> {
+    run_git(repo_path, &["add", "."])?;
+    Ok(())
+}
+
+pub fn commit_verbose(repo_path: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["commit", "--verbose"])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| "Failed to execute git commit --verbose")?;
+
+    if !status.success() {
+        anyhow::bail!("Git commit failed");
+    }
+
     Ok(())
 }
 

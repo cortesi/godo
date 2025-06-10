@@ -120,6 +120,7 @@ impl Godo {
     pub fn run(
         &self,
         keep: bool,
+        autocommit: bool,
         excludes: &[String],
         sandbox_name: &str,
         command: &[String],
@@ -181,6 +182,17 @@ impl Godo {
 
         if !status.success() {
             anyhow::bail!("Command exited with status: {status}");
+        }
+
+        // Handle autocommit if requested
+        if autocommit && git::has_uncommitted_changes(&sandbox_path)? {
+            self.output.message("Auto-committing changes...")?;
+
+            // Stage all changes
+            git::add_all(&sandbox_path)?;
+
+            // Commit with verbose flag
+            git::commit_verbose(&sandbox_path)?;
         }
 
         // Clean up if not keeping
