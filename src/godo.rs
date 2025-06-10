@@ -205,14 +205,102 @@ impl Godo {
         let project = project_name(&self.repo_dir)?;
         let project_dir = self.project_dir()?;
 
-        self.output.message(&format!(
-            "Listing sandboxes for project '{project}' in {project_dir:?}"
-        ))?;
+        // Get all worktrees from git
+        let worktrees = git::list_worktrees(&self.repo_dir)?;
 
-        // TODO: Implement list functionality
-        // 1. Read sandboxes directory
-        // 2. Check which sandboxes exist
-        // 3. Show their status (running, kept)
+        // Get all branches
+        let all_branches = git::list_branches(&self.repo_dir)?;
+
+        // Filter godo branches (those that start with "godo/")
+        let godo_branches: Vec<String> = all_branches
+            .into_iter()
+            .filter(|branch| branch.starts_with("godo/"))
+            .collect();
+
+        // Get directories in the project directory
+        let mut dangling_dirs = Vec::new();
+        if project_dir.exists() {
+            for entry in fs::read_dir(&project_dir)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    let dir_name = entry.file_name().to_string_lossy().to_string();
+                    dangling_dirs.push(dir_name);
+                }
+            }
+        }
+
+        // Find active worktrees (those with directories)
+        let mut active_sandboxes = Vec::new();
+        for worktree in &worktrees {
+            let branch = worktree
+                .branch
+                .strip_prefix("refs/heads/")
+                .unwrap_or(&worktree.branch);
+            if branch.starts_with("godo/") {
+                if let Some(sandbox_name) = branch.strip_prefix("godo/") {
+                    active_sandboxes.push(sandbox_name.to_string());
+                    // Remove from dangling dirs since it's active
+                    dangling_dirs.retain(|d| d != sandbox_name);
+                }
+            }
+        }
+
+        // Find branches without worktrees (ready for merge)
+        let mut ready_for_merge = Vec::new();
+        for branch in &godo_branches {
+            if let Some(sandbox_name) = branch.strip_prefix("godo/") {
+                let has_worktree = worktrees
+                    .iter()
+                    .any(|w| w.branch == format!("refs/heads/{branch}") || &w.branch == branch);
+
+                if !has_worktree {
+                    ready_for_merge.push(sandbox_name.to_string());
+                    // Remove from dangling dirs since it has a branch
+                    dangling_dirs.retain(|d| d != sandbox_name);
+                }
+            }
+        }
+
+        // Display results
+        self.output
+            .message(&format!("Sandboxes for project '{project}':"))?;
+        self.output.message("")?;
+
+        // Active sandboxes
+        if !active_sandboxes.is_empty() {
+            self.output.success("Running (with worktrees):")?;
+            for sandbox in &active_sandboxes {
+                self.output.message(&format!("  - {sandbox}"))?;
+            }
+            self.output.message("")?;
+        }
+
+        // Ready for merge
+        if !ready_for_merge.is_empty() {
+            self.output
+                .warn("Ready for merge (branches without worktrees):")?;
+            for sandbox in &ready_for_merge {
+                self.output
+                    .message(&format!("  - {sandbox} (branch: godo/{sandbox})"))?;
+            }
+            self.output.message("")?;
+        }
+
+        // Dangling directories
+        if !dangling_dirs.is_empty() {
+            self.output
+                .fail("Dangling (directories without branches):")?;
+            for dir in &dangling_dirs {
+                let dir_path = project_dir.join(dir);
+                self.output
+                    .message(&format!("  - {dir} (at {dir_path:?})"))?;
+            }
+            self.output.message("")?;
+        }
+
+        if active_sandboxes.is_empty() && ready_for_merge.is_empty() && dangling_dirs.is_empty() {
+            self.output.message("No sandboxes found.")?;
+        }
 
         Ok(())
     }

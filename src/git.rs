@@ -208,6 +208,66 @@ pub fn worktree_has_commits(worktree_path: &Path) -> Result<bool> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    #[allow(dead_code)]
+    pub path: PathBuf,
+    pub branch: String,
+    #[allow(dead_code)]
+    pub head: String,
+}
+
+pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
+    let output = run_git(repo_path, &["worktree", "list", "--porcelain"])?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    let mut worktrees = Vec::new();
+    let mut current_worktree = None;
+    let mut current_head = None;
+    let mut current_branch = None;
+
+    for line in output_str.lines() {
+        if let Some(path_str) = line.strip_prefix("worktree ") {
+            // Save previous worktree if exists
+            if let Some(path) = current_worktree.take() {
+                worktrees.push(WorktreeInfo {
+                    path,
+                    branch: current_branch.take().unwrap_or_default(),
+                    head: current_head.take().unwrap_or_default(),
+                });
+            }
+            // Start new worktree
+            current_worktree = Some(PathBuf::from(path_str));
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            current_head = Some(head.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            current_branch = Some(branch.to_string());
+        }
+    }
+
+    // Save last worktree
+    if let Some(path) = current_worktree {
+        worktrees.push(WorktreeInfo {
+            path,
+            branch: current_branch.unwrap_or_default(),
+            head: current_head.unwrap_or_default(),
+        });
+    }
+
+    Ok(worktrees)
+}
+
+pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
+    let output = run_git(repo_path, &["branch", "--format=%(refname:short)"])?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    Ok(output_str
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
