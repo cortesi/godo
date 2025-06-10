@@ -116,7 +116,7 @@ pub fn add_all(repo_path: &Path) -> Result<()> {
 pub fn commit_verbose(repo_path: &Path) -> Result<()> {
     let status = Command::new("git")
         .current_dir(repo_path)
-        .args(&["commit", "--verbose"])
+        .args(["commit", "--verbose"])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

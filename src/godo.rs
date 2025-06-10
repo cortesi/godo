@@ -131,10 +131,8 @@ impl Godo {
         // Check for uncommitted changes
         if git::has_uncommitted_changes(&self.repo_dir)? {
             self.output.warn("Warning: You have uncommitted changes:")?;
-            if !self.no_prompt {
-                if !self.output.confirm("Continue creating worktree? [y/N]")? {
-                    anyhow::bail!("Aborted by user");
-                }
+            if !self.no_prompt && !self.output.confirm("Continue creating worktree? [y/N]")? {
+                anyhow::bail!("Aborted by user");
             }
         }
 
@@ -236,10 +234,8 @@ impl Godo {
                 "Warning: Sandbox '{name}' has uncommitted changes"
             ))?;
 
-            if !self.no_prompt {
-                if !self.output.confirm("Continue with removal? [y/N]")? {
-                    anyhow::bail!("Aborted by user");
-                }
+            if !self.no_prompt && !self.output.confirm("Continue with removal? [y/N]")? {
+                anyhow::bail!("Aborted by user");
             }
         }
 
