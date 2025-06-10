@@ -132,8 +132,7 @@ impl Godo {
             self.output.warn("Warning: You have uncommitted changes:")?;
             if !self.no_prompt {
                 if !self.output.confirm("Continue creating worktree? [y/N]")? {
-                    self.output.fail("Aborted.")?;
-                    return Ok(());
+                    anyhow::bail!("Aborted by user");
                 }
             }
         }
@@ -181,8 +180,7 @@ impl Godo {
         };
 
         if !status.success() {
-            self.output
-                .fail(&format!("Command exited with status: {status}"))?;
+            anyhow::bail!("Command exited with status: {status}");
         }
 
         // Clean up if not keeping
@@ -228,8 +226,7 @@ impl Godo {
 
             if !self.no_prompt {
                 if !self.output.confirm("Continue with removal? [y/N]")? {
-                    self.output.fail("Aborted.")?;
-                    return Ok(());
+                    anyhow::bail!("Aborted by user");
                 }
             }
         }
