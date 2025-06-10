@@ -47,7 +47,7 @@ impl Terminal {
     fn write_colored(&self, msg: &str, color: Color) -> io::Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
         stdout.set_color(ColorSpec::new().set_fg(Some(color)))?;
-        writeln!(stdout, "{}", msg)?;
+        writeln!(stdout, "{msg}")?;
         stdout.reset()?;
         stdout.flush()
     }

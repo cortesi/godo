@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use crate::git;
 use crate::output::Output;
@@ -72,19 +73,18 @@ fn branch_name(sandbox_name: &str) -> String {
     format!("godo/{sandbox_name}")
 }
 
-
 pub struct Godo {
     godo_dir: PathBuf,
     repo_dir: PathBuf,
     no_prompt: bool,
-    output: Box<dyn Output>,
+    output: Arc<dyn Output>,
 }
 
 impl Godo {
     pub fn new(
         godo_dir: PathBuf,
         repo_dir: Option<PathBuf>,
-        output: Box<dyn Output>,
+        output: Arc<dyn Output>,
         no_prompt: bool,
     ) -> Result<Self> {
         // Ensure godo directory exists
@@ -151,14 +151,10 @@ impl Godo {
         let project_dir = self.project_dir()?;
         fs::create_dir_all(&project_dir)?;
 
-        self.output.message(&format!(
-            "Creating sandbox {} with branch {} at {:?}",
-            sandbox_name,
-            branch_name(sandbox_name),
-            sandbox_path
-        ))?;
-
         let branch = branch_name(sandbox_name);
+        self.output.message(&format!(
+            "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
+        ))?;
         git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
 
         self.output.message("Copying files to sandbox...")?;
@@ -192,7 +188,8 @@ impl Godo {
         };
 
         if !status.success() {
-            self.output.fail(&format!("Command exited with status: {status}"))?;
+            self.output
+                .fail(&format!("Command exited with status: {status}"))?;
         }
 
         // Clean up if not keeping
@@ -208,9 +205,7 @@ impl Godo {
         let project_dir = self.project_dir()?;
 
         self.output.message(&format!(
-            "Listing sandboxes for project '{}' in {:?}",
-            project,
-            project_dir
+            "Listing sandboxes for project '{project}' in {project_dir:?}"
         ))?;
 
         // TODO: Implement list functionality
@@ -235,8 +230,7 @@ impl Godo {
         // Check for uncommitted changes in the worktree
         if !force && git::has_uncommitted_changes(&sandbox_path)? {
             self.output.warn(&format!(
-                "Warning: Sandbox '{}' has uncommitted changes",
-                name
+                "Warning: Sandbox '{name}' has uncommitted changes"
             ))?;
 
             if !self.no_prompt {
@@ -253,11 +247,8 @@ impl Godo {
             }
         }
 
-        self.output.warn(&format!(
-            "Removing sandbox {} from {:?}",
-            name,
-            self.godo_dir
-        ))?;
+        self.output
+            .warn(&format!("Removing sandbox {name} from {:?}", self.godo_dir))?;
 
         self.cleanup_sandbox(name, force)
     }
@@ -267,9 +258,7 @@ impl Godo {
         let project_dir = self.project_dir()?;
 
         self.output.warn(&format!(
-            "Pruning sandboxes for project '{}' in {:?}",
-            project,
-            project_dir
+            "Pruning sandboxes for project '{project}' in {project_dir:?}"
         ))?;
 
         // TODO: Implement prune functionality
@@ -282,7 +271,8 @@ impl Godo {
 
     /// Clean up a sandbox by removing worktree and optionally the branch
     fn cleanup_sandbox(&self, name: &str, force: bool) -> Result<()> {
-        self.output.message(&format!("Cleaning up sandbox {}...", name))?;
+        self.output
+            .message(&format!("Cleaning up sandbox {name}..."))?;
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
@@ -301,14 +291,12 @@ impl Godo {
             }
             Err(e) => {
                 let error_msg = e.to_string();
-                self.output.warn(&format!(
-                    "Cannot remove worktree: {}",
-                    error_msg.trim()
-                ))?;
+                let trimmed_msg = error_msg.trim();
+                self.output
+                    .warn(&format!("Cannot remove worktree: {trimmed_msg}"))?;
                 if !force && error_msg.contains("uncommitted") {
                     self.output.warn(&format!(
-                        "Worktree has uncommitted changes. Use 'godo rm {} --force' to force removal.",
-                        name
+                        "Worktree has uncommitted changes. Use 'godo rm {name} --force' to force removal."
                     ))?;
                 }
                 return Ok(());
@@ -324,25 +312,24 @@ impl Godo {
         if !has_commits || force {
             match git::delete_branch(&self.repo_dir, &branch, force) {
                 Ok(_) => {
-                    self.output.success("Sandbox and branch cleaned up successfully.")?;
+                    self.output
+                        .success("Sandbox and branch cleaned up successfully.")?;
                 }
                 Err(e) => {
-                    self.output.warn(&format!(
-                        "Warning: Failed to delete branch: {}",
-                        e.to_string().trim()
-                    ))?;
+                    let error_msg = e.to_string();
+                    let trimmed_msg = error_msg.trim();
+                    self.output
+                        .warn(&format!("Warning: Failed to delete branch: {trimmed_msg}"))?;
                 }
             }
         } else {
             self.output.success(&format!(
-                "Sandbox removed. Branch {} kept (has commits).",
-                branch
+                "Sandbox removed. Branch {branch} kept (has commits)."
             ))?;
         }
 
         Ok(())
     }
-
 }
 
 fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
@@ -505,7 +492,7 @@ mod tests {
         let repo_dir = PathBuf::from("/home/user/projects/my-project");
 
         // Create a Godo instance
-        let output: Box<dyn Output> = Box::new(Quiet);
+        let output: Arc<dyn Output> = Arc::new(Quiet);
         let godo = Godo::new(godo_dir.clone(), Some(repo_dir), output, false).unwrap();
 
         // Test project_dir method

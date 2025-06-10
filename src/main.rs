@@ -1,8 +1,9 @@
+use crate::output::Output;
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+use std::sync::Arc;
 
 mod git;
 mod godo;
@@ -92,26 +93,40 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Determine color output preference early for error handling
+    let color = if cli.color {
+        true
+    } else if cli.no_color {
+        false
+    } else {
+        // Auto-detect based on terminal
+        std::io::stdout().is_terminal()
+    };
+
+    // Create output handler for potential error messages
+    let output: Arc<dyn Output> = if cli.quiet {
+        Arc::new(crate::output::Quiet)
+    } else {
+        Arc::new(crate::output::Terminal::new(color))
+    };
+
     // Handle errors with custom formatting
-    if let Err(e) = run() {
+    if let Err(e) = run(cli, output.clone()) {
         // Reset any existing colors
         print!("\x1b[0m");
         let _ = std::io::stdout().flush();
 
-        // Print error in orange to stderr
-        let mut stderr = StandardStream::stderr(ColorChoice::Auto);
-        let _ = stderr.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(255, 165, 0))));
-        eprintln!("Error: {e:#}");
-        let _ = stderr.reset();
+        // Use the output handler to display the error
+        let _ = output.fail(&format!("Error: {e:#}"));
 
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-
+fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
     // Determine godo directory (priority: CLI flag > env var > default)
     let godo_dir = if let Some(dir) = &cli.dir {
         expand_tilde(dir)
@@ -124,24 +139,7 @@ fn run() -> Result<()> {
     // Determine repository directory
     let repo_dir = cli.repo_dir.as_ref().map(|repo| expand_tilde(repo));
 
-    // Determine color output preference
-    let color = if cli.color {
-        true
-    } else if cli.no_color {
-        false
-    } else {
-        // Auto-detect based on terminal
-        std::io::stdout().is_terminal()
-    };
-
-    // Create appropriate output handler
-    let output: Box<dyn crate::output::Output> = if cli.quiet {
-        Box::new(crate::output::Quiet)
-    } else {
-        Box::new(crate::output::Terminal::new(color))
-    };
-
-    // Create Godo instance
+    // Create Godo instance with the same output object
     let godo = Godo::new(godo_dir, repo_dir, output, cli.no_prompt)
         .context("Failed to initialize godo")?;
 
