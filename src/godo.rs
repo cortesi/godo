@@ -445,126 +445,144 @@ mod tests {
 
     #[test]
     fn test_clean_name() {
-        // Test valid characters
-        assert_eq!(clean_name("valid-name"), "valid-name");
-        assert_eq!(clean_name("valid_name"), "valid_name");
-        assert_eq!(clean_name("ValidName123"), "ValidName123");
-        assert_eq!(clean_name("a-b_c123"), "a-b_c123");
+        let test_cases = vec![
+            // (input, expected)
+            // Valid characters (should not change)
+            ("valid-name", "valid-name"),
+            ("valid_name", "valid_name"),
+            ("ValidName123", "ValidName123"),
+            ("a-b_c123", "a-b_c123"),
+            // Special characters replacement
+            ("my.project", "my-project"),
+            ("my project", "my-project"),
+            ("my@project!", "my-project-"),
+            ("my/project", "my-project"),
+            ("my\\project", "my-project"),
+            ("my:project", "my-project"),
+            ("my*project", "my-project"),
+            ("my?project", "my-project"),
+            ("my\"project", "my-project"),
+            ("my<project>", "my-project-"),
+            ("my|project", "my-project"),
+            // Unicode and non-ASCII characters
+            ("café", "caf-"),
+            ("项目", "--"),
+            ("проект", "------"),
+            ("🚀rocket", "-rocket"),
+            // Multiple consecutive special characters
+            ("my...project", "my---project"),
+            ("my   project", "my---project"),
+            ("my@#$%project", "my----project"),
+            // Edge cases
+            ("", ""),
+            ("-", "-"),
+            ("_", "_"),
+            ("---", "---"),
+            ("@#$%", "----"),
+            // Beginning and ending special characters
+            (".project", "-project"),
+            ("project.", "project-"),
+            (".project.", "-project-"),
+            // Real-world examples
+            ("my-awesome-project", "my-awesome-project"),
+            ("MyCompany.Project", "MyCompany-Project"),
+            ("2024-project", "2024-project"),
+            ("project (copy)", "project--copy-"),
+            ("project [v2]", "project--v2-"),
+        ];
 
-        // Test special characters replacement
-        assert_eq!(clean_name("my.project"), "my-project");
-        assert_eq!(clean_name("my project"), "my-project");
-        assert_eq!(clean_name("my@project!"), "my-project-");
-        assert_eq!(clean_name("my/project"), "my-project");
-        assert_eq!(clean_name("my\\project"), "my-project");
-        assert_eq!(clean_name("my:project"), "my-project");
-        assert_eq!(clean_name("my*project"), "my-project");
-        assert_eq!(clean_name("my?project"), "my-project");
-        assert_eq!(clean_name("my\"project"), "my-project");
-        assert_eq!(clean_name("my<project>"), "my-project-");
-        assert_eq!(clean_name("my|project"), "my-project");
-
-        // Test Unicode and non-ASCII characters
-        assert_eq!(clean_name("café"), "caf-");
-        assert_eq!(clean_name("项目"), "--");
-        assert_eq!(clean_name("проект"), "------");
-        assert_eq!(clean_name("🚀rocket"), "-rocket");
-
-        // Test multiple consecutive special characters
-        assert_eq!(clean_name("my...project"), "my---project");
-        assert_eq!(clean_name("my   project"), "my---project");
-        assert_eq!(clean_name("my@#$%project"), "my----project");
-
-        // Test edge cases
-        assert_eq!(clean_name(""), "");
-        assert_eq!(clean_name("-"), "-");
-        assert_eq!(clean_name("_"), "_");
-        assert_eq!(clean_name("---"), "---");
-        assert_eq!(clean_name("@#$%"), "----");
-
-        // Test beginning and ending special characters
-        assert_eq!(clean_name(".project"), "-project");
-        assert_eq!(clean_name("project."), "project-");
-        assert_eq!(clean_name(".project."), "-project-");
-
-        // Test real-world examples
-        assert_eq!(clean_name("my-awesome-project"), "my-awesome-project");
-        assert_eq!(clean_name("MyCompany.Project"), "MyCompany-Project");
-        assert_eq!(clean_name("2024-project"), "2024-project");
-        assert_eq!(clean_name("project (copy)"), "project--copy-");
-        assert_eq!(clean_name("project [v2]"), "project--v2-");
+        for (input, expected) in test_cases {
+            assert_eq!(clean_name(input), expected, "Failed for input: '{}'", input);
+        }
     }
 
     #[test]
     fn test_project_name() {
-        // Test normal project names
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/my-project")).unwrap(),
-            "my-project"
-        );
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/my_project")).unwrap(),
-            "my_project"
-        );
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/MyProject123")).unwrap(),
-            "MyProject123"
-        );
+        let test_cases = vec![
+            // (path, expected)
+            // Normal project names
+            ("/home/user/projects/my-project", "my-project"),
+            ("/home/user/projects/my_project", "my_project"),
+            ("/home/user/projects/MyProject123", "MyProject123"),
+            // Names with special characters that get replaced
+            ("/home/user/projects/my.project", "my-project"),
+            ("/home/user/projects/my project", "my-project"),
+            ("/home/user/projects/my@project!", "my-project-"),
+            // Edge cases
+            ("/", "root"),
+            ("project", "project"),
+            // Paths that result in all special chars being replaced
+            ("/home/user/projects/...", "---"),
+            ("/home/user/projects/@#$%^&*()", "---------"),
+        ];
 
-        // Test names with special characters that get replaced
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/my.project")).unwrap(),
-            "my-project"
-        );
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/my project")).unwrap(),
-            "my-project"
-        );
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/my@project!")).unwrap(),
-            "my-project-"
-        );
-
-        // Test edge cases
-        assert_eq!(project_name(&PathBuf::from("/")).unwrap(), "root");
-        assert_eq!(project_name(&PathBuf::from("project")).unwrap(), "project");
-
-        // Test paths that would result in empty cleaned names
-        // Note: "..." becomes "---" which is not empty, so it should succeed
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/...")).unwrap(),
-            "---"
-        );
-
-        // Test that a path with only special chars still produces a valid name
-        assert_eq!(
-            project_name(&PathBuf::from("/home/user/projects/@#$%^&*()")).unwrap(),
-            "---------" // 9 special chars become 9 hyphens
-        );
+        for (path, expected) in test_cases {
+            let result = project_name(&PathBuf::from(path)).unwrap();
+            assert_eq!(result, expected, "Failed for path: '{}'", path);
+        }
     }
 
     #[test]
     fn test_validate_sandbox_name() {
-        // Valid names
-        assert!(validate_sandbox_name("test").is_ok());
-        assert!(validate_sandbox_name("test-123").is_ok());
-        assert!(validate_sandbox_name("test_123").is_ok());
-        assert!(validate_sandbox_name("TEST").is_ok());
-        assert!(validate_sandbox_name("a1b2c3").is_ok());
+        let valid_names = vec![
+            "test",
+            "test-123",
+            "test_123",
+            "TEST",
+            "a1b2c3",
+            "my-feature-branch",
+            "bug_fix_123",
+            "RELEASE-2024",
+        ];
 
-        // Invalid names
-        assert!(validate_sandbox_name("").is_err());
-        assert!(validate_sandbox_name("test space").is_err());
-        assert!(validate_sandbox_name("test.dot").is_err());
-        assert!(validate_sandbox_name("test@symbol").is_err());
-        assert!(validate_sandbox_name("test/slash").is_err());
+        let invalid_names = vec![
+            "",              // empty
+            "test space",    // contains space
+            "test.dot",      // contains dot
+            "test@symbol",   // contains @
+            "test/slash",    // contains /
+            "test\\back",    // contains backslash
+            "test:colon",    // contains colon
+            "test*star",     // contains asterisk
+            "test?question", // contains question mark
+            "test|pipe",     // contains pipe
+        ];
+
+        for name in valid_names {
+            assert!(
+                validate_sandbox_name(name).is_ok(),
+                "Expected '{}' to be valid",
+                name
+            );
+        }
+
+        for name in invalid_names {
+            assert!(
+                validate_sandbox_name(name).is_err(),
+                "Expected '{}' to be invalid",
+                name
+            );
+        }
     }
 
     #[test]
     fn test_branch_name() {
-        assert_eq!(branch_name("test"), "godo/test");
-        assert_eq!(branch_name("feature-123"), "godo/feature-123");
-        assert_eq!(branch_name("my_sandbox"), "godo/my_sandbox");
+        let test_cases = vec![
+            ("test", "godo/test"),
+            ("feature-123", "godo/feature-123"),
+            ("my_sandbox", "godo/my_sandbox"),
+            ("bugfix", "godo/bugfix"),
+            ("RELEASE-2024", "godo/RELEASE-2024"),
+        ];
+
+        for (sandbox, expected) in test_cases {
+            assert_eq!(
+                branch_name(sandbox),
+                expected,
+                "Failed for sandbox name: '{}'",
+                sandbox
+            );
+        }
     }
 
     #[test]
