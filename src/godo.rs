@@ -4,9 +4,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use crate::git;
+use crate::output::Output;
 
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
 fn validate_sandbox_name(name: &str) -> Result<()> {
@@ -72,38 +72,19 @@ fn branch_name(sandbox_name: &str) -> String {
     format!("godo/{sandbox_name}")
 }
 
-macro_rules! out {
-    ($self:expr, $($arg:tt)*) => {{
-        use std::io::Write;
-        let mut stdout = $self.stdout();
-        write!(stdout, $($arg)*)?;
-    }};
-}
-
-macro_rules! outlnc {
-    ($self:expr, $color:expr, $($arg:tt)*) => {{
-        use std::io::Write;
-        let mut stdout = $self.stdout();
-        stdout.set_color(ColorSpec::new().set_fg(Some($color)))?;
-        writeln!(stdout, $($arg)*)?;
-        stdout.reset()?;
-    }};
-}
 
 pub struct Godo {
     godo_dir: PathBuf,
     repo_dir: PathBuf,
-    color: bool,
-    quiet: bool,
     no_prompt: bool,
+    output: Box<dyn Output>,
 }
 
 impl Godo {
     pub fn new(
         godo_dir: PathBuf,
         repo_dir: Option<PathBuf>,
-        color: bool,
-        quiet: bool,
+        output: Box<dyn Output>,
         no_prompt: bool,
     ) -> Result<Self> {
         // Ensure godo directory exists
@@ -121,9 +102,8 @@ impl Godo {
         Ok(Self {
             godo_dir,
             repo_dir,
-            color,
-            quiet,
             no_prompt,
+            output,
         })
     }
 
@@ -150,20 +130,16 @@ impl Godo {
 
         // Check for uncommitted changes
         if git::has_uncommitted_changes(&self.repo_dir)? {
-            outlnc!(
-                self,
-                Color::Yellow,
-                "Warning: You have uncommitted changes:"
-            );
+            self.output.warn("Warning: You have uncommitted changes:")?;
             if !self.no_prompt {
-                out!(self, "Continue creating worktree? [y/N] ");
+                print!("Continue creating worktree? [y/N] ");
                 io::stdout().flush()?;
 
                 let mut response = String::new();
                 io::stdin().read_line(&mut response)?;
 
                 if !response.trim().to_lowercase().starts_with('y') {
-                    outlnc!(self, Color::Red, "Aborted.");
+                    self.output.fail("Aborted.")?;
                     return Ok(());
                 }
             }
@@ -175,19 +151,17 @@ impl Godo {
         let project_dir = self.project_dir()?;
         fs::create_dir_all(&project_dir)?;
 
-        outlnc!(
-            self,
-            Color::Cyan,
+        self.output.message(&format!(
             "Creating sandbox {} with branch {} at {:?}",
             sandbox_name,
             branch_name(sandbox_name),
             sandbox_path
-        );
+        ))?;
 
         let branch = branch_name(sandbox_name);
         git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
 
-        outlnc!(self, Color::Cyan, "Copying files to sandbox...");
+        self.output.message("Copying files to sandbox...")?;
 
         let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
 
@@ -218,7 +192,7 @@ impl Godo {
         };
 
         if !status.success() {
-            outlnc!(self, Color::Red, "Command exited with status: {status}");
+            self.output.fail(&format!("Command exited with status: {status}"))?;
         }
 
         // Clean up if not keeping
@@ -233,13 +207,11 @@ impl Godo {
         let project = project_name(&self.repo_dir)?;
         let project_dir = self.project_dir()?;
 
-        outlnc!(
-            self,
-            Color::Cyan,
+        self.output.message(&format!(
             "Listing sandboxes for project '{}' in {:?}",
             project,
             project_dir
-        );
+        ))?;
 
         // TODO: Implement list functionality
         // 1. Read sandboxes directory
@@ -262,34 +234,30 @@ impl Godo {
 
         // Check for uncommitted changes in the worktree
         if !force && git::has_uncommitted_changes(&sandbox_path)? {
-            outlnc!(
-                self,
-                Color::Yellow,
+            self.output.warn(&format!(
                 "Warning: Sandbox '{}' has uncommitted changes",
                 name
-            );
+            ))?;
 
             if !self.no_prompt {
-                out!(self, "Continue with removal? [y/N] ");
+                print!("Continue with removal? [y/N] ");
                 io::stdout().flush()?;
 
                 let mut response = String::new();
                 io::stdin().read_line(&mut response)?;
 
                 if !response.trim().to_lowercase().starts_with('y') {
-                    outlnc!(self, Color::Red, "Aborted.");
+                    self.output.fail("Aborted.")?;
                     return Ok(());
                 }
             }
         }
 
-        outlnc!(
-            self,
-            Color::Yellow,
+        self.output.warn(&format!(
             "Removing sandbox {} from {:?}",
             name,
             self.godo_dir
-        );
+        ))?;
 
         self.cleanup_sandbox(name, force)
     }
@@ -298,13 +266,11 @@ impl Godo {
         let project = project_name(&self.repo_dir)?;
         let project_dir = self.project_dir()?;
 
-        outlnc!(
-            self,
-            Color::Yellow,
+        self.output.warn(&format!(
             "Pruning sandboxes for project '{}' in {:?}",
             project,
             project_dir
-        );
+        ))?;
 
         // TODO: Implement prune functionality
         // 1. List all sandboxes
@@ -316,7 +282,7 @@ impl Godo {
 
     /// Clean up a sandbox by removing worktree and optionally the branch
     fn cleanup_sandbox(&self, name: &str, force: bool) -> Result<()> {
-        outlnc!(self, Color::Cyan, "Cleaning up sandbox {}...", name);
+        self.output.message(&format!("Cleaning up sandbox {}...", name))?;
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
@@ -335,19 +301,15 @@ impl Godo {
             }
             Err(e) => {
                 let error_msg = e.to_string();
-                outlnc!(
-                    self,
-                    Color::Yellow,
+                self.output.warn(&format!(
                     "Cannot remove worktree: {}",
                     error_msg.trim()
-                );
+                ))?;
                 if !force && error_msg.contains("uncommitted") {
-                    outlnc!(
-                        self,
-                        Color::Yellow,
+                    self.output.warn(&format!(
                         "Worktree has uncommitted changes. Use 'godo rm {} --force' to force removal.",
                         name
-                    );
+                    ))?;
                 }
                 return Ok(());
             }
@@ -362,47 +324,25 @@ impl Godo {
         if !has_commits || force {
             match git::delete_branch(&self.repo_dir, &branch, force) {
                 Ok(_) => {
-                    outlnc!(
-                        self,
-                        Color::Green,
-                        "Sandbox and branch cleaned up successfully."
-                    );
+                    self.output.success("Sandbox and branch cleaned up successfully.")?;
                 }
                 Err(e) => {
-                    outlnc!(
-                        self,
-                        Color::Yellow,
+                    self.output.warn(&format!(
                         "Warning: Failed to delete branch: {}",
                         e.to_string().trim()
-                    );
+                    ))?;
                 }
             }
         } else {
-            outlnc!(
-                self,
-                Color::Green,
+            self.output.success(&format!(
                 "Sandbox removed. Branch {} kept (has commits).",
                 branch
-            );
+            ))?;
         }
 
         Ok(())
     }
 
-    /// Create a writer for stdout that respects quiet and color settings
-    fn stdout(&self) -> Box<dyn WriteColor> {
-        if self.quiet {
-            Box::new(NoopWriter)
-        } else {
-            let color_choice = if self.color {
-                ColorChoice::Always
-            } else {
-                ColorChoice::Never
-            };
-
-            Box::new(StandardStream::stdout(color_choice))
-        }
-    }
 }
 
 fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
@@ -411,36 +351,10 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A no-op writer that discards all output
-struct NoopWriter;
-
-impl Write for NoopWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl WriteColor for NoopWriter {
-    fn supports_color(&self) -> bool {
-        false
-    }
-
-    fn set_color(&mut self, _spec: &termcolor::ColorSpec) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn reset(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::Quiet;
     use std::path::PathBuf;
 
     #[test]
@@ -591,7 +505,8 @@ mod tests {
         let repo_dir = PathBuf::from("/home/user/projects/my-project");
 
         // Create a Godo instance
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir), false, false, false).unwrap();
+        let output: Box<dyn Output> = Box::new(Quiet);
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir), output, false).unwrap();
 
         // Test project_dir method
         let project_dir = godo.project_dir().unwrap();

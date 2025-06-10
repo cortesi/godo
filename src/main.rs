@@ -6,6 +6,7 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod git;
 mod godo;
+mod output;
 use godo::Godo;
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
@@ -133,8 +134,15 @@ fn run() -> Result<()> {
         std::io::stdout().is_terminal()
     };
 
+    // Create appropriate output handler
+    let output: Box<dyn crate::output::Output> = if cli.quiet {
+        Box::new(crate::output::Quiet)
+    } else {
+        Box::new(crate::output::Terminal::new(color))
+    };
+
     // Create Godo instance
-    let godo = Godo::new(godo_dir, repo_dir, color, cli.quiet, cli.no_prompt)
+    let godo = Godo::new(godo_dir, repo_dir, output, cli.no_prompt)
         .context("Failed to initialize godo")?;
 
     match cli.command {
