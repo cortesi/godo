@@ -55,6 +55,10 @@ enum Commands {
         #[arg(long)]
         keep: bool,
 
+        /// Automatically commit all changes with the specified message after command exits
+        #[arg(long)]
+        commit: Option<String>,
+
         /// Exclude directories that match glob (can be specified multiple times)
         #[arg(long = "exclude", value_name = "GLOB")]
         excludes: Vec<String>,
@@ -147,11 +151,12 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
     match cli.command {
         Commands::Run {
             keep,
+            commit,
             excludes,
             name,
             command,
         } => {
-            godo.run(keep, &excludes, &name, &command)?;
+            godo.run(keep, commit, &excludes, &name, &command)?;
         }
         Commands::List => {
             godo.list()?;

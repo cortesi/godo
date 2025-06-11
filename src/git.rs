@@ -130,6 +130,11 @@ pub fn commit_interactive(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn commit(repo_path: &Path, message: &str) -> Result<()> {
+    run_git(repo_path, &["commit", "-m", message])?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     #[allow(dead_code)]
@@ -578,6 +583,28 @@ mod tests {
         // Test from non-git directory
         let non_git_dir = temp_dir.path().parent().unwrap();
         assert_eq!(find_root(non_git_dir), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create and stage a file
+        fs::write(repo_path.join("test.txt"), "test content")?;
+        add_all(&repo_path)?;
+
+        // Commit with a message
+        commit(&repo_path, "Test commit message")?;
+
+        // Verify the commit was created
+        let log_output = run_git(&repo_path, &["log", "--oneline", "-1"])?;
+        let log_str = String::from_utf8_lossy(&log_output.stdout);
+        assert!(log_str.contains("Test commit message"));
+
+        // Verify no uncommitted changes remain
+        assert!(!has_uncommitted_changes(&repo_path)?);
 
         Ok(())
     }

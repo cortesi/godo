@@ -207,6 +207,7 @@ impl Godo {
     pub fn run(
         &self,
         keep: bool,
+        commit: Option<String>,
         excludes: &[String],
         sandbox_name: &str,
         command: &[String],
@@ -282,8 +283,18 @@ impl Godo {
             anyhow::bail!("Command exited with status: {status}");
         }
 
-        // Prompt user for action if not explicitly keeping
-        if !keep {
+        // Handle automatic commit if specified
+        if let Some(commit_message) = commit {
+            self.output.message("Staging and committing changes...")?;
+            // Stage all changes
+            git::add_all(&sandbox_path)?;
+            // Commit with the provided message
+            git::commit(&sandbox_path, &commit_message)?;
+            self.output.success(&format!("Committed with message: {}", commit_message))?;
+            // Clean up after commit
+            self.cleanup_sandbox(sandbox_name)?;
+        } else if !keep {
+            // Prompt user for action if not explicitly keeping or committing
             loop {
                 let action = self.prompt_for_action(&sandbox_path)?;
                 match action {
