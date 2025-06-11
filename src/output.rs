@@ -230,7 +230,7 @@ impl Output for Terminal {
         terminal::enable_raw_mode().map_err(|e| OutputError::Terminal(e.to_string()))?;
 
         // Ensure we restore terminal on exit
-        let result = (|| -> Result<usize> {
+        let result = (|| -> Result<(usize, Option<char>)> {
             loop {
                 if let Event::Key(KeyEvent { code, .. }) =
                     event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
@@ -241,13 +241,11 @@ impl Output for Terminal {
 
                             // Check if input matches any shortcut
                             if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {
-                                // Print the selected character before returning
-                                println!("{ch_lower}");
-                                return Ok(index);
+                                // Return the index and character to print after restoring terminal
+                                return Ok((index, Some(ch_lower)));
                             }
                         }
                         KeyCode::Esc => {
-                            println!();
                             return Err(OutputError::Cancelled);
                         }
                         _ => {}
@@ -259,7 +257,19 @@ impl Output for Terminal {
         // Always restore terminal mode
         terminal::disable_raw_mode().map_err(|e| OutputError::Terminal(e.to_string()))?;
 
-        result
+        // Print the selected character after restoring terminal mode
+        match result {
+            Ok((index, Some(ch))) => {
+                println!("{ch}");
+                Ok(index)
+            }
+            Err(OutputError::Cancelled) => {
+                println!();
+                Err(OutputError::Cancelled)
+            }
+            Ok((index, None)) => Ok(index),
+            Err(e) => Err(e),
+        }
     }
 
     fn finish(&self) -> Result<()> {

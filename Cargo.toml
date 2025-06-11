@@ -1,7 +1,12 @@
 [package]
 name = "godo"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+authors = ["Aldo Cortesi <aldo@corte.si>"]
+description = "Fast, parallel sandboxes for any Git project"
+license = "MIT"
+repository = "https://github.com/cortesi/godo"
+keywords = ["git", "worktree", "sandbox", "testing", "isolation"]
 
 [dependencies]
 anyhow = "1.0.98"
