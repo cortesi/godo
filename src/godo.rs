@@ -33,11 +33,16 @@ struct Sandbox {
 }
 
 impl Sandbox {
+    /// Returns true if the sandbox has both a worktree and a branch
+    fn is_live(&self) -> bool {
+        self.has_worktree && self.has_branch
+    }
+
     /// Display the sandbox status using the provided output
     fn show(&self, output: &dyn Output) -> Result<()> {
         let mut attributes = Vec::new();
 
-        if self.has_worktree && self.has_branch {
+        if self.is_live() {
             attributes.push("live");
         } else if self.has_branch {
             attributes.push("branch only");
@@ -210,37 +215,66 @@ impl Godo {
         // Validate sandbox name
         validate_sandbox_name(sandbox_name)?;
 
-        // Check for uncommitted changes
-        if git::has_uncommitted_changes(&self.repo_dir)? {
-            self.output.warn("You have uncommitted changes:")?;
-            if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
-                anyhow::bail!("Aborted by user");
-            }
-        }
-
         let sandbox_path = self.sandbox_path(sandbox_name)?;
 
-        // Ensure project directory exists
-        let project_dir = self.project_dir()?;
-        fs::create_dir_all(&project_dir)?;
+        // Check if sandbox exists
+        let existing_sandbox = match self.get_sandbox(sandbox_name) {
+            Ok(sandbox) => Some(sandbox),
+            Err(_) => None,
+        };
 
-        let branch = branch_name(sandbox_name);
-        self.output.message(&format!(
-            "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
-        ))?;
-        git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
+        if let Some(sandbox) = existing_sandbox {
+            // Sandbox exists, check if it's live
+            if sandbox.is_live() {
+                self.output.message(&format!(
+                    "Using existing sandbox {sandbox_name} at {sandbox_path:?}"
+                ))?;
+            } else {
+                let mut missing = Vec::new();
+                if !sandbox.has_worktree {
+                    missing.push("worktree");
+                }
+                if !sandbox.has_branch {
+                    missing.push("branch");
+                }
+                anyhow::bail!(
+                    "Sandbox '{}' exists but is not live (missing {})",
+                    sandbox_name,
+                    missing.join(" and ")
+                );
+            }
+        } else {
+            // Sandbox doesn't exist, create it
+            // Check for uncommitted changes
+            if git::has_uncommitted_changes(&self.repo_dir)? {
+                self.output.warn("You have uncommitted changes:")?;
+                if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
+                    anyhow::bail!("Aborted by user");
+                }
+            }
 
-        self.output.message("Cloning tree to sandbox...")?;
+            // Ensure project directory exists
+            let project_dir = self.project_dir()?;
+            fs::create_dir_all(&project_dir)?;
 
-        let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
+            let branch = branch_name(sandbox_name);
+            self.output.message(&format!(
+                "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
+            ))?;
+            git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
 
-        // Add user-specified excludes with "!" prefix
-        for exclude in excludes {
-            clone_options = clone_options.glob(format!("!{exclude}"));
+            self.output.message("Cloning tree to sandbox...")?;
+
+            let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
+
+            // Add user-specified excludes with "!" prefix
+            for exclude in excludes {
+                clone_options = clone_options.glob(format!("!{exclude}"));
+            }
+
+            clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
+                .context("Failed to clone files to sandbox")?;
         }
-
-        clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
-            .context("Failed to clone files to sandbox")?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let status = if command.is_empty() {
