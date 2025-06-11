@@ -268,6 +268,37 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Check if a branch has commits that haven't been merged to the main branch
+pub fn has_unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<bool> {
+    // First, try to find the main branch (could be main, master, or something else)
+    let main_branch = if has_branch(repo_path, "main")? {
+        "main"
+    } else if has_branch(repo_path, "master")? {
+        "master"
+    } else {
+        // If no main/master, can't determine if there are unmerged commits
+        return Ok(false);
+    };
+
+    // Check if the branch has commits not in main
+    // Using rev-list to count commits in branch that are not in main
+    match run_git(
+        repo_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{main_branch}..{branch_name}"),
+        ],
+    ) {
+        Ok(output) => {
+            let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let count = count_str.parse::<u32>().unwrap_or(0);
+            Ok(count > 0)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

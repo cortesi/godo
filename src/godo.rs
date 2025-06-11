@@ -14,6 +14,20 @@ enum PostRunAction {
     Keep,
 }
 
+/// Status information for a sandbox
+struct SandboxStatus {
+    /// Whether the branch exists
+    branch_exists: bool,
+    /// Whether the worktree exists
+    worktree_exists: bool,
+    /// Whether there are any staged or unstaged uncommitted changes in the worktree
+    has_uncommitted_changes: bool,
+    /// Whether the branch has commits that have not been merged yet
+    has_unmerged_commits: bool,
+    /// Whether the worktree is dangling (no backing directory)
+    is_dangling: bool,
+}
+
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
 fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -251,99 +265,131 @@ impl Godo {
         Ok(())
     }
 
+    /// Get the status of a sandbox by name
+    fn sandbox_status(&self, name: &str) -> Result<Option<SandboxStatus>> {
+        let sandbox_path = self.sandbox_path(name)?;
+        let branch_name = branch_name(name);
+
+        // Check if branch exists
+        let branch_exists = git::has_branch(&self.repo_dir, &branch_name)?;
+
+        // Get all worktrees to check if this sandbox has a worktree
+        let worktrees = git::list_worktrees(&self.repo_dir)?;
+        let worktree_exists = worktrees.iter().any(|w| {
+            let branch = w.branch.strip_prefix("refs/heads/").unwrap_or(&w.branch);
+            branch == branch_name
+        });
+
+        // If neither branch, worktree, nor directory exists, the sandbox doesn't exist
+        if !branch_exists && !worktree_exists && !sandbox_path.exists() {
+            return Ok(None);
+        }
+
+        // Check for uncommitted changes (only if worktree exists)
+        let has_uncommitted_changes = if worktree_exists && sandbox_path.exists() {
+            git::has_uncommitted_changes(&sandbox_path).unwrap_or(false)
+        } else {
+            false
+        };
+
+        // Check for unmerged commits (only if branch exists)
+        let has_unmerged_commits = if branch_exists {
+            git::has_unmerged_commits(&self.repo_dir, &branch_name).unwrap_or(false)
+        } else {
+            false
+        };
+
+        // Check if dangling (directory exists but no branch)
+        let is_dangling = sandbox_path.exists() && !branch_exists;
+
+        Ok(Some(SandboxStatus {
+            branch_exists,
+            worktree_exists,
+            has_uncommitted_changes,
+            has_unmerged_commits,
+            is_dangling,
+        }))
+    }
+
     pub fn list(&self) -> Result<()> {
         let project_dir = self.project_dir()?;
 
-        // Get all worktrees from git
-        let worktrees = git::list_worktrees(&self.repo_dir)?;
+        let mut all_names = std::collections::HashSet::new();
 
-        // Get all branches
         let all_branches = git::list_branches(&self.repo_dir)?;
-
-        // Filter godo branches (those that start with "godo/")
-        let godo_branches: Vec<String> = all_branches
-            .into_iter()
-            .filter(|branch| branch.starts_with("godo/"))
-            .collect();
-
-        // Get directories in the project directory
-        let mut dangling_dirs = Vec::new();
-        if project_dir.exists() {
-            for entry in fs::read_dir(&project_dir)? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() {
-                    let dir_name = entry.file_name().to_string_lossy().to_string();
-                    dangling_dirs.push(dir_name);
-                }
+        for branch in &all_branches {
+            if let Some(name) = branch.strip_prefix("godo/") {
+                all_names.insert(name.to_string());
             }
         }
 
-        // Find active worktrees (those with directories)
-        let mut active_sandboxes = Vec::new();
+        let worktrees = git::list_worktrees(&self.repo_dir)?;
         for worktree in &worktrees {
             let branch = worktree
                 .branch
                 .strip_prefix("refs/heads/")
                 .unwrap_or(&worktree.branch);
-            if branch.starts_with("godo/") {
-                if let Some(sandbox_name) = branch.strip_prefix("godo/") {
-                    active_sandboxes.push(sandbox_name.to_string());
-                    // Remove from dangling dirs since it's active
-                    dangling_dirs.retain(|d| d != sandbox_name);
+            if let Some(name) = branch.strip_prefix("godo/") {
+                all_names.insert(name.to_string());
+            }
+        }
+
+        if project_dir.exists() {
+            for entry in fs::read_dir(&project_dir)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    let dir_name = entry.file_name().to_string_lossy().to_string();
+                    all_names.insert(dir_name);
                 }
             }
         }
 
-        // Find branches without worktrees (ready for merge)
-        let mut ready_for_merge = Vec::new();
-        for branch in &godo_branches {
-            if let Some(sandbox_name) = branch.strip_prefix("godo/") {
-                let has_worktree = worktrees
-                    .iter()
-                    .any(|w| w.branch == format!("refs/heads/{branch}") || &w.branch == branch);
+        // Sort all names alphabetically
+        let mut sorted_names: Vec<String> = all_names.into_iter().collect();
+        sorted_names.sort();
 
-                if !has_worktree {
-                    ready_for_merge.push(sandbox_name.to_string());
-                    // Remove from dangling dirs since it has a branch
-                    dangling_dirs.retain(|d| d != sandbox_name);
-                }
-            }
-        }
-
-        // Active sandboxes
-        if !active_sandboxes.is_empty() {
-            self.output.success("Running (with worktrees):")?;
-            for sandbox in &active_sandboxes {
-                self.output.message(&format!("  - {sandbox}"))?;
-            }
-            self.output.message("")?;
-        }
-
-        // Ready for merge
-        if !ready_for_merge.is_empty() {
-            self.output
-                .warn("Ready for merge (branches without worktrees):")?;
-            for sandbox in &ready_for_merge {
-                self.output
-                    .message(&format!("  - {sandbox} (branch: godo/{sandbox})"))?;
-            }
-            self.output.message("")?;
-        }
-
-        // Dangling directories
-        if !dangling_dirs.is_empty() {
-            self.output
-                .fail("Dangling (directories without branches):")?;
-            for dir in &dangling_dirs {
-                let dir_path = project_dir.join(dir);
-                self.output
-                    .message(&format!("  - {dir} (at {dir_path:?})"))?;
-            }
-            self.output.message("")?;
-        }
-
-        if active_sandboxes.is_empty() && ready_for_merge.is_empty() && dangling_dirs.is_empty() {
+        if sorted_names.is_empty() {
             self.output.message("No sandboxes found.")?;
+            return Ok(());
+        }
+
+        // Display each sandbox with its attributes
+        for name in sorted_names {
+            match self.sandbox_status(&name)? {
+                Some(status) => {
+                    let mut attributes = Vec::new();
+
+                    if status.worktree_exists && status.branch_exists {
+                        attributes.push("live");
+                    } else if status.branch_exists {
+                        attributes.push("branch only");
+                    }
+
+                    if status.has_uncommitted_changes {
+                        attributes.push("uncommitted changes");
+                    }
+
+                    if status.has_unmerged_commits {
+                        attributes.push("unmerged");
+                    }
+
+                    if status.is_dangling {
+                        attributes.push("dangling worktree");
+                    }
+
+                    let attributes_str = if attributes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", attributes.join(", "))
+                    };
+
+                    self.output.message(&format!("{name}{attributes_str}"))?;
+                }
+                None => {
+                    // Skip sandboxes that don't exist
+                    continue;
+                }
+            }
         }
 
         Ok(())
