@@ -82,8 +82,7 @@ fn validate_sandbox_name(name: &str) -> Result<()> {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         anyhow::bail!(
-            "Invalid sandbox name '{}': names can only contain letters, numbers, hyphens, and underscores",
-            name
+            "Invalid sandbox name '{name}': names can only contain letters, numbers, hyphens, and underscores",
         );
     }
 
@@ -217,11 +216,7 @@ impl Godo {
 
         let sandbox_path = self.sandbox_path(sandbox_name)?;
 
-        // Check if sandbox exists
-        let existing_sandbox = match self.get_sandbox(sandbox_name) {
-            Ok(sandbox) => Some(sandbox),
-            Err(_) => None,
-        };
+        let existing_sandbox = self.get_sandbox(sandbox_name)?;
 
         if let Some(sandbox) = existing_sandbox {
             // Sandbox exists, check if it's live
@@ -230,18 +225,7 @@ impl Godo {
                     "Using existing sandbox {sandbox_name} at {sandbox_path:?}"
                 ))?;
             } else {
-                let mut missing = Vec::new();
-                if !sandbox.has_worktree {
-                    missing.push("worktree");
-                }
-                if !sandbox.has_branch {
-                    missing.push("branch");
-                }
-                anyhow::bail!(
-                    "Sandbox '{}' exists but is not live (missing {})",
-                    sandbox_name,
-                    missing.join(" and ")
-                );
+                anyhow::bail!("Sandbox '{sandbox_name}' exists but is not live - remove it first");
             }
         } else {
             // Sandbox doesn't exist, create it
@@ -338,7 +322,7 @@ impl Godo {
     }
 
     /// Get the status of a sandbox by name
-    fn get_sandbox(&self, name: &str) -> Result<Sandbox> {
+    fn get_sandbox(&self, name: &str) -> Result<Option<Sandbox>> {
         let sandbox_path = self.sandbox_path(name)?;
         let branch_name = branch_name(name);
 
@@ -357,7 +341,7 @@ impl Godo {
 
         // If neither branch, worktree, nor directory exists, the sandbox doesn't exist
         if !has_branch && !has_worktree && !has_worktree_dir {
-            anyhow::bail!("sandbox '{}' does not exist", name);
+            return Ok(None);
         }
 
         // Check for uncommitted changes (only if worktree exists)
@@ -377,7 +361,7 @@ impl Godo {
         // Check if dangling (directory exists but no branch)
         let is_dangling = has_worktree_dir && !has_branch;
 
-        Ok(Sandbox {
+        Ok(Some(Sandbox {
             name: name.to_string(),
             has_branch,
             has_worktree,
@@ -385,7 +369,7 @@ impl Godo {
             has_uncommitted_changes,
             has_unmerged_commits,
             is_dangling,
-        })
+        }))
     }
 
     pub fn list(&self) -> Result<()> {
@@ -431,11 +415,11 @@ impl Godo {
 
         // Display each sandbox with its attributes
         for name in sorted_names {
-            match self.get_sandbox(&name) {
-                Ok(status) => {
+            match self.get_sandbox(&name)? {
+                Some(status) => {
                     status.show(&*self.output)?;
                 }
-                Err(_) => {
+                None => {
                     // Skip sandboxes that don't exist
                     continue;
                 }
@@ -446,7 +430,10 @@ impl Godo {
     }
 
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
-        let status = self.get_sandbox(name)?;
+        let status = match self.get_sandbox(name)? {
+            Some(s) => s,
+            None => anyhow::bail!("sandbox '{name}' does not exist"),
+        };
 
         if !force {
             if status.has_uncommitted_changes
@@ -469,12 +456,11 @@ impl Godo {
         self.remove_sandbox(name)
     }
 
-
     /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits
     fn cleanup_sandbox(&self, name: &str) -> Result<()> {
-        let status = match self.get_sandbox(name) {
-            Ok(s) => s,
-            Err(_) => {
+        let status = match self.get_sandbox(name)? {
+            Some(s) => s,
+            None => {
                 self.output.message(&format!("no such sandbox: {name}"))?;
                 return Ok(());
             }
@@ -530,7 +516,10 @@ impl Godo {
     /// Remove a sandbox forcefully or fail if it has changes
     fn remove_sandbox(&self, name: &str) -> Result<()> {
         // Get sandbox status to check current state
-        let status = self.get_sandbox(name)?;
+        let status = match self.get_sandbox(name)? {
+            Some(s) => s,
+            None => anyhow::bail!("sandbox '{name}' does not exist"),
+        };
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
