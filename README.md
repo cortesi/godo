@@ -5,14 +5,11 @@
 
 # godo
 
-**Fast parallel sandboxes for any Git project**
+Fast, parallel sandboxes for any Git project.
 
-`godo` spins up fast copy‑on‑write sandboxes (`clonetree` + `git worktree`) so
-you can run tests, AI code generators, or one‑off tools in parallel without
-touching your main working copy. Copy-on-write means the sandboxes take no
-extra space, and non-tracked assets like NPM directories or Rust target
-directories are also cloned quickly. When the task finishes, changes are
-committed to a branch you can merge whenever you like.
+`godo` creates copy-on-write worktrees so you can run tests, generators or
+one-off tools in isolation. Each sandbox is disposable, disk-cheap and mapped
+to its own branch, letting you merge the results whenever you are ready.
 
 ---
 
@@ -34,28 +31,29 @@ cargo install godo
 
 ## Quick start
 
-Run `cargo fmt` in an isolated workspace that disappears when done:
+Run `cargo fmt` in an isolated workspace that is cleaned up afterwards:
 
 ```bash
 $ godo run format cargo fmt
 ```
 
-1. A worktree appears in `~/.godo/format`.
+1. A worktree appears in `~/.godo/<project>/format`.
 2. `cargo fmt` runs there, touching only CoW copies.
-3. The tool prompts you for a commit message and writes changes to `godo/format`.
+3. The tool prompts you for a commit message and commits the result to branch `godo/format`.
 4. The sandbox is deleted (pass `--keep` to keep it).
 
 ---
 
 ## Features at a glance
 
-* Runs from inside **any** Git repo.
-* Sandboxes live under `~/.godo/<name>` by default.
-* Customize the godo directory with `--dir` flag or `GODO_DIR` environment variable.
-* By default every untracked item-even those in `.gitignore` - is copied into the
-  sandbox using APFS copy‑on‑write.  Limit what is copied with `--copy`.
-* Results land on branch `godo/<name>`.
-* The sandbox is automatically removed unless you keep it with `--keep`.
+* Works from any Git repository.
+* Sandboxes live under `~/.godo/<project>/<name>` (configurable with `--dir` or `GODO_DIR`).
+* The full file tree – except `.git/` – is cloned using copy-on-write where the
+  filesystem supports it (APFS, Btrfs, ZFS…).
+* Exclude paths with repeated `--exclude <glob>` flags.
+* Each sandbox is backed by branch `godo/<name>`.
+* Automatic cleanup; keep a sandbox with `--keep` or auto-commit with
+  `--commit "msg"`.
 
 ---
 
@@ -101,10 +99,10 @@ Options:
    objects.
 
 3. **Clone the file tree**  
-   Uses the [clonetree](https://github.com/cortesi/clonetree) crate to clone
-   the repository tree into the sandbox, skipping `.git/` and applying any
-   `--exclude <glob>` patterns. On CoW-enabled filesystems (e.g. APFS) this
-   leverages `clonefile(2)` for instant copy-on-write clones.
+   Uses [clonetree](https://github.com/cortesi/clonetree) to copy the working
+   tree, skipping `.git/` and honouring `--exclude <glob>` rules. On
+   copy-on-write filesystems this is instantaneous and consumes no
+   additional space.
 
 4. **Run the command or shell**  
    Invokes `$SHELL -c "<COMMAND>"` (or drops into an interactive shell if no
