@@ -7,10 +7,10 @@
 
 **Fast parallel sandboxes for any Git project**
 
-`godo` spins up isolated, copy‑on‑write workspaces (APFS `clonefile` + `git
-worktree`) so you can run tests, generators, or one‑off tools in parallel
-without touching your main working copy. When the task finishes, changes are
-committed to a branch you can merge whenever you like.
+`godo` spins up isolated, copy‑on‑write workspaces (`clonetree` + `git
+worktree`) so you can run tests, AI code generators, or one‑off tools in
+parallel without touching your main working copy. When the task finishes,
+changes are committed to a branch you can merge whenever you like.
 
 ---
 
@@ -80,9 +80,6 @@ Shows existing sandboxes that are still on disk (either running or created with 
 
 Deletes the named sandbox directory and detaches its worktree.
 
-### `godo prune`
-
-Removes sandbox directories whose branch no longer exists, freeing disk space.
 
 ---
 

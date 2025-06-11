@@ -366,8 +366,7 @@ impl Godo {
             }
         }
 
-        let worktrees = git::list_worktrees(&self.repo_dir)?;
-        for worktree in &worktrees {
+        for worktree in git::list_worktrees(&self.repo_dir)? {
             let branch = worktree
                 .branch
                 .strip_prefix("refs/heads/")
@@ -436,21 +435,6 @@ impl Godo {
         self.remove_sandbox(name)
     }
 
-    pub fn prune(&self) -> Result<()> {
-        let project = project_name(&self.repo_dir)?;
-        let project_dir = self.project_dir()?;
-
-        self.output.warn(&format!(
-            "Pruning sandboxes for project '{project}' in {project_dir:?}"
-        ))?;
-
-        // TODO: Implement prune functionality
-        // 1. List all sandboxes
-        // 2. Check which branches still exist
-        // 3. Remove sandboxes whose branches are gone
-
-        Ok(())
-    }
 
     /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits
     fn cleanup_sandbox(&self, name: &str) -> Result<()> {

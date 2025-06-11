@@ -81,8 +81,6 @@ enum Commands {
         force: bool,
     },
 
-    /// Remove sandboxes whose branch no longer exists
-    Prune,
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -160,9 +158,6 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
         }
         Commands::Remove { name, force } => {
             godo.remove(&name, force)?;
-        }
-        Commands::Prune => {
-            godo.prune()?;
         }
     }
 
