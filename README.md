@@ -54,6 +54,7 @@ $ godo run format cargo fmt
 * Each sandbox is backed by branch `godo/<name>`.
 * Automatic cleanup; keep a sandbox with `--keep` or auto-commit with
   `--commit "msg"`.
+* Exit codes from commands are preserved, making `godo` scriptable.
 
 ---
 
@@ -107,7 +108,8 @@ Options:
 4. **Run the command or shell**  
    Invokes `$SHELL -c "<COMMAND>"` (or drops into an interactive shell if no
    command is provided) inside the sandbox, so all writes and changes remain
-   isolated.
+   isolated. The exit code from the command is preserved and passed back to the
+   caller, allowing `godo` to be used in scripts and CI pipelines.
 
 5. **Commit or keep results**  
    Unless `--keep` is specified, godo prompts to:
