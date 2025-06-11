@@ -8,6 +8,12 @@ use std::sync::Arc;
 use crate::git;
 use crate::output::Output;
 
+enum PostRunAction {
+    Commit,
+    Shell,
+    Keep,
+}
+
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
 fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -117,10 +123,34 @@ impl Godo {
         Ok(self.project_dir()?.join(sandbox_name))
     }
 
+    /// Prompt the user for what to do after command execution
+    fn prompt_for_action(&self, sandbox_path: &Path) -> Result<PostRunAction> {
+        // Check if there are uncommitted changes
+        let has_changes = git::has_uncommitted_changes(sandbox_path)?;
+
+        let prompt = if has_changes {
+            "Command completed. You have uncommitted changes. What would you like to do?"
+        } else {
+            "Command completed. What would you like to do?"
+        };
+
+        let options = vec![
+            "commit - stage all changes and commit".to_string(),
+            "shell - run a shell in the sandbox".to_string(),
+            "keep - keep the sandbox and exit".to_string(),
+        ];
+
+        match self.output.select(prompt, options)? {
+            0 => Ok(PostRunAction::Commit),
+            1 => Ok(PostRunAction::Shell),
+            2 => Ok(PostRunAction::Keep),
+            _ => unreachable!("Invalid selection"),
+        }
+    }
+
     pub fn run(
         &self,
         keep: bool,
-        autocommit: bool,
         excludes: &[String],
         sandbox_name: &str,
         command: &[String],
@@ -182,20 +212,40 @@ impl Godo {
             anyhow::bail!("Command exited with status: {status}");
         }
 
-        // Handle autocommit if requested
-        if autocommit && git::has_uncommitted_changes(&sandbox_path)? {
-            self.output.message("Auto-committing changes...")?;
-
-            // Stage all changes
-            git::add_all(&sandbox_path)?;
-
-            // Commit with verbose flag
-            git::commit_interactive(&sandbox_path)?;
-        }
-
-        // Clean up if not keeping
+        // Prompt user for action if not explicitly keeping
         if !keep {
-            self.cleanup_sandbox(sandbox_name, false)?;
+            let action = self.prompt_for_action(&sandbox_path)?;
+            match action {
+                PostRunAction::Commit => {
+                    self.output.message("Staging and committing changes...")?;
+                    // Stage all changes
+                    git::add_all(&sandbox_path)?;
+                    // Commit with verbose flag
+                    git::commit_interactive(&sandbox_path)?;
+                    // Clean up after commit
+                    self.cleanup_sandbox(sandbox_name, false)?;
+                }
+                PostRunAction::Shell => {
+                    self.output.message("Opening shell in sandbox...")?;
+                    // Run interactive shell
+                    let shell_status = Command::new(&shell)
+                        .current_dir(&sandbox_path)
+                        .status()
+                        .context("Failed to start shell")?;
+
+                    if !shell_status.success() {
+                        self.output.warn("Shell exited with non-zero status")?;
+                    }
+                    // Clean up after shell exits
+                    self.cleanup_sandbox(sandbox_name, false)?;
+                }
+                PostRunAction::Keep => {
+                    self.output.success(&format!(
+                        "Keeping sandbox. You can return to it at: {}",
+                        sandbox_path.display()
+                    ))?;
+                }
+            }
         }
 
         Ok(())
@@ -415,7 +465,7 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::Quiet;
+    use crate::output::{Output, Quiet};
     use std::path::PathBuf;
 
     #[test]
@@ -579,5 +629,75 @@ mod tests {
             sandbox_path,
             godo_dir.join("my-project").join("test-sandbox")
         );
+    }
+
+    // Mock output for testing prompt_for_action
+    struct MockOutput {
+        selection: usize,
+    }
+
+    impl Output for MockOutput {
+        fn message(&self, _msg: &str) -> crate::output::Result<()> {
+            Ok(())
+        }
+
+        fn success(&self, _msg: &str) -> crate::output::Result<()> {
+            Ok(())
+        }
+
+        fn warn(&self, _msg: &str) -> crate::output::Result<()> {
+            Ok(())
+        }
+
+        fn fail(&self, _msg: &str) -> crate::output::Result<()> {
+            Ok(())
+        }
+
+        fn confirm(&self, _prompt: &str) -> crate::output::Result<bool> {
+            Ok(true)
+        }
+
+        fn select(&self, _prompt: &str, _options: Vec<String>) -> crate::output::Result<usize> {
+            Ok(self.selection)
+        }
+
+        fn finish(&self) -> crate::output::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_prompt_for_action() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let godo_dir = temp_dir.path().join(".godo");
+        let repo_dir = temp_dir.path().join("repo");
+
+        // Initialize a git repository
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::process::Command::new("git")
+            .current_dir(&repo_dir)
+            .args(&["init"])
+            .output()
+            .unwrap();
+
+        // Test selecting "Commit"
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 0 });
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
+        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        assert!(matches!(action, PostRunAction::Commit));
+
+        // Test selecting "Shell"
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
+        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        assert!(matches!(action, PostRunAction::Shell));
+
+        // Test selecting "Keep"
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 2 });
+        let godo = Godo::new(godo_dir, Some(repo_dir.clone()), output, false).unwrap();
+        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        assert!(matches!(action, PostRunAction::Keep));
     }
 }
