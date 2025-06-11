@@ -127,3 +127,29 @@ Options:
 
 7. You can now merge the changes from `godo/<name>` into your main branch
    whenever you like.
+
+---
+
+## Filesystem support
+
+`godo` uses [clonetree](https://github.com/cortesi/clonetree) for efficient
+file cloning. Performance depends on your filesystem's copy-on-write (CoW)
+capabilities:
+
+### Filesystems with native CoW support
+
+- **macOS 10.13+** / APFS
+- **iOS** / APFS
+- **Linux 6.7+** / Btrfs
+- **Linux 5.4+** / XFS (with `reflink=1`)
+- **Linux 6.1+** / bcachefs
+- **Linux 5.13+** / overlayfs
+- **Windows Server 2016+** / ReFS
+
+### Filesystems without CoW support
+
+- **ext4** (Ubuntu/Fedora default) - Falls back to byte-for-byte copy
+
+On CoW-enabled filesystems, cloning is near-instantaneous and uses no
+additional disk space until files are modified. On other filesystems, a full
+copy is made, which may take longer for large repositories.
