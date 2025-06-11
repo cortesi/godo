@@ -16,16 +16,54 @@ enum PostRunAction {
 
 /// Status information for a sandbox
 struct Sandbox {
+    /// The name of the sandbox
+    name: String,
     /// Whether the branch exists
     has_branch: bool,
     /// Whether the worktree exists
     has_worktree: bool,
+    /// Whether the worktree directory path exists
+    has_worktree_dir: bool,
     /// Whether there are any staged or unstaged uncommitted changes in the worktree
     has_uncommitted_changes: bool,
     /// Whether the branch has commits that have not been merged yet
     has_unmerged_commits: bool,
     /// Whether the worktree is dangling (no backing directory)
     is_dangling: bool,
+}
+
+impl Sandbox {
+    /// Display the sandbox status using the provided output
+    fn show(&self, output: &dyn Output) -> Result<()> {
+        let mut attributes = Vec::new();
+
+        if self.has_worktree && self.has_branch {
+            attributes.push("live");
+        } else if self.has_branch {
+            attributes.push("branch only");
+        }
+
+        if self.has_uncommitted_changes {
+            attributes.push("uncommitted changes");
+        }
+
+        if self.has_unmerged_commits {
+            attributes.push("unmerged");
+        }
+
+        if self.is_dangling {
+            attributes.push("dangling worktree");
+        }
+
+        let attributes_str = if attributes.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", attributes.join(", "))
+        };
+
+        output.message(&format!("{}{}", self.name, attributes_str))?;
+        Ok(())
+    }
 }
 
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
@@ -174,7 +212,7 @@ impl Godo {
 
         // Check for uncommitted changes
         if git::has_uncommitted_changes(&self.repo_dir)? {
-            self.output.warn("Warning: You have uncommitted changes:")?;
+            self.output.warn("You have uncommitted changes:")?;
             if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
                 anyhow::bail!("Aborted by user");
             }
@@ -192,7 +230,7 @@ impl Godo {
         ))?;
         git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
 
-        self.output.message("Copying files to sandbox...")?;
+        self.output.message("Cloning tree to sandbox...")?;
 
         let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
 
@@ -202,7 +240,7 @@ impl Godo {
         }
 
         clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
-            .context("Failed to copy files to sandbox")?;
+            .context("Failed to clone files to sandbox")?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let status = if command.is_empty() {
@@ -266,49 +304,54 @@ impl Godo {
     }
 
     /// Get the status of a sandbox by name
-    fn get_sandbox(&self, name: &str) -> Result<Option<Sandbox>> {
+    fn get_sandbox(&self, name: &str) -> Result<Sandbox> {
         let sandbox_path = self.sandbox_path(name)?;
         let branch_name = branch_name(name);
 
         // Check if branch exists
-        let branch_exists = git::has_branch(&self.repo_dir, &branch_name)?;
+        let has_branch = git::has_branch(&self.repo_dir, &branch_name)?;
 
         // Get all worktrees to check if this sandbox has a worktree
         let worktrees = git::list_worktrees(&self.repo_dir)?;
-        let worktree_exists = worktrees.iter().any(|w| {
+        let has_worktree = worktrees.iter().any(|w| {
             let branch = w.branch.strip_prefix("refs/heads/").unwrap_or(&w.branch);
             branch == branch_name
         });
 
+        // Check if the worktree directory exists
+        let has_worktree_dir = sandbox_path.exists();
+
         // If neither branch, worktree, nor directory exists, the sandbox doesn't exist
-        if !branch_exists && !worktree_exists && !sandbox_path.exists() {
-            return Ok(None);
+        if !has_branch && !has_worktree && !has_worktree_dir {
+            anyhow::bail!("sandbox '{}' does not exist", name);
         }
 
         // Check for uncommitted changes (only if worktree exists)
-        let has_uncommitted_changes = if worktree_exists && sandbox_path.exists() {
+        let has_uncommitted_changes = if has_worktree && has_worktree_dir {
             git::has_uncommitted_changes(&sandbox_path).unwrap_or(false)
         } else {
             false
         };
 
         // Check for unmerged commits (only if branch exists)
-        let has_unmerged_commits = if branch_exists {
+        let has_unmerged_commits = if has_branch {
             git::has_unmerged_commits(&self.repo_dir, &branch_name).unwrap_or(false)
         } else {
             false
         };
 
         // Check if dangling (directory exists but no branch)
-        let is_dangling = sandbox_path.exists() && !branch_exists;
+        let is_dangling = has_worktree_dir && !has_branch;
 
-        Ok(Some(Sandbox {
-            has_branch: branch_exists,
-            has_worktree: worktree_exists,
+        Ok(Sandbox {
+            name: name.to_string(),
+            has_branch,
+            has_worktree,
+            has_worktree_dir,
             has_uncommitted_changes,
             has_unmerged_commits,
             is_dangling,
-        }))
+        })
     }
 
     pub fn list(&self) -> Result<()> {
@@ -355,37 +398,11 @@ impl Godo {
 
         // Display each sandbox with its attributes
         for name in sorted_names {
-            match self.get_sandbox(&name)? {
-                Some(status) => {
-                    let mut attributes = Vec::new();
-
-                    if status.has_worktree && status.has_branch {
-                        attributes.push("live");
-                    } else if status.has_branch {
-                        attributes.push("branch only");
-                    }
-
-                    if status.has_uncommitted_changes {
-                        attributes.push("uncommitted changes");
-                    }
-
-                    if status.has_unmerged_commits {
-                        attributes.push("unmerged");
-                    }
-
-                    if status.is_dangling {
-                        attributes.push("dangling worktree");
-                    }
-
-                    let attributes_str = if attributes.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", attributes.join(", "))
-                    };
-
-                    self.output.message(&format!("{name}{attributes_str}"))?;
+            match self.get_sandbox(&name) {
+                Ok(status) => {
+                    status.show(&*self.output)?;
                 }
-                None => {
+                Err(_) => {
                     // Skip sandboxes that don't exist
                     continue;
                 }
@@ -396,14 +413,7 @@ impl Godo {
     }
 
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
-        validate_sandbox_name(name)?;
-
         let status = self.get_sandbox(name)?;
-        if status.is_none() {
-            anyhow::bail!("sandbox '{}' does not exist", name);
-        }
-
-        let status = status.unwrap();
 
         if !force {
             if status.has_uncommitted_changes
@@ -444,12 +454,13 @@ impl Godo {
 
     /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits
     fn cleanup_sandbox(&self, name: &str) -> Result<()> {
-        let status = self.get_sandbox(name)?;
-        if status.is_none() {
-            self.output.message("no such sandbox: {name}")?;
-            return Ok(());
-        }
-        let status = status.unwrap();
+        let status = match self.get_sandbox(name) {
+            Ok(s) => s,
+            Err(_) => {
+                self.output.message(&format!("no such sandbox: {name}"))?;
+                return Ok(());
+            }
+        };
 
         self.output
             .message(&format!("cleaning up sandbox {name}..."))?;
@@ -468,7 +479,7 @@ impl Godo {
         }
 
         // Clean up the directory if it still exists and worktree was removed
-        if !status.has_worktree && sandbox_path.exists() {
+        if !status.has_worktree && status.has_worktree_dir {
             fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
         }
 
@@ -502,32 +513,18 @@ impl Godo {
     fn remove_sandbox(&self, name: &str) -> Result<()> {
         // Get sandbox status to check current state
         let status = self.get_sandbox(name)?;
-        if status.is_none() {
-            anyhow::bail!("sandbox '{}' does not exist", name);
-        }
-        let status = status.unwrap();
-
-        self.output
-            .message(&format!("Removing sandbox {name}..."))?;
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
 
-        // Remove the worktree if it exists
         if status.has_worktree {
             git::remove_worktree(&self.repo_dir, &sandbox_path, true)?
         }
-
-        // Clean up the directory if it still exists
         if sandbox_path.exists() {
             fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
         }
-
-        // Delete the branch if it exists
         if status.has_branch {
             git::delete_branch(&self.repo_dir, &branch, true)?
-        } else {
-            self.output.success("Sandbox removed successfully.")?;
         }
 
         Ok(())
