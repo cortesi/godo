@@ -284,36 +284,39 @@ impl Godo {
 
         // Prompt user for action if not explicitly keeping
         if !keep {
-            let action = self.prompt_for_action(&sandbox_path)?;
-            match action {
-                PostRunAction::Commit => {
-                    self.output.message("Staging and committing changes...")?;
-                    // Stage all changes
-                    git::add_all(&sandbox_path)?;
-                    // Commit with verbose flag
-                    git::commit_interactive(&sandbox_path)?;
-                    // Clean up after commit
-                    self.cleanup_sandbox(sandbox_name)?;
-                }
-                PostRunAction::Shell => {
-                    self.output.message("Opening shell in sandbox...")?;
-                    // Run interactive shell
-                    let shell_status = Command::new(&shell)
-                        .current_dir(&sandbox_path)
-                        .status()
-                        .context("Failed to start shell")?;
-
-                    if !shell_status.success() {
-                        self.output.warn("Shell exited with non-zero status")?;
+            loop {
+                let action = self.prompt_for_action(&sandbox_path)?;
+                match action {
+                    PostRunAction::Commit => {
+                        self.output.message("Staging and committing changes...")?;
+                        // Stage all changes
+                        git::add_all(&sandbox_path)?;
+                        // Commit with verbose flag
+                        git::commit_interactive(&sandbox_path)?;
+                        // Clean up after commit
+                        self.cleanup_sandbox(sandbox_name)?;
+                        break; // Exit the loop after commit
                     }
-                    // Clean up after shell exits
-                    self.cleanup_sandbox(sandbox_name)?;
-                }
-                PostRunAction::Keep => {
-                    self.output.success(&format!(
-                        "Keeping sandbox. You can return to it at: {}",
-                        sandbox_path.display()
-                    ))?;
+                    PostRunAction::Shell => {
+                        self.output.message("Opening shell in sandbox...")?;
+                        // Run interactive shell
+                        let shell_status = Command::new(&shell)
+                            .current_dir(&sandbox_path)
+                            .status()
+                            .context("Failed to start shell")?;
+
+                        if !shell_status.success() {
+                            self.output.warn("Shell exited with non-zero status")?;
+                        }
+                        // Continue the loop to show prompt again
+                    }
+                    PostRunAction::Keep => {
+                        self.output.success(&format!(
+                            "Keeping sandbox. You can return to it at: {}",
+                            sandbox_path.display()
+                        ))?;
+                        break; // Exit the loop after keep
+                    }
                 }
             }
         }
@@ -439,14 +442,14 @@ impl Godo {
             if status.has_uncommitted_changes
                 && !self
                     .output
-                    .confirm("sandbox has uncommitted changes. Remove anyway?")?
+                    .confirm("Sandbox has uncommitted changes. Remove anyway?")?
             {
                 anyhow::bail!("Aborted by user");
             }
             if status.has_unmerged_commits
                 && !self
                     .output
-                    .confirm("sandbox has unmerged commits. Remove anyway?")?
+                    .confirm("Branch has unmerged commits. Remove anyway?")?
             {
                 anyhow::bail!("Aborted by user");
             }
