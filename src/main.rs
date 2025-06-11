@@ -67,10 +67,12 @@ enum Commands {
     },
 
     /// Show existing sandboxes
+    #[command(alias = "ls")]
     List,
 
     /// Delete a named sandbox
-    Rm {
+    #[command(alias = "rm")]
+    Remove {
         /// Name of the sandbox to remove
         name: String,
 
@@ -156,7 +158,7 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
         Commands::List => {
             godo.list()?;
         }
-        Commands::Rm { name, force } => {
+        Commands::Remove { name, force } => {
             godo.remove(&name, force)?;
         }
         Commands::Prune => {
