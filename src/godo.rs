@@ -1,12 +1,40 @@
-use anyhow::{Context, Result};
 use clonetree::{Options, clone_tree};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use thiserror::Error;
 
 use crate::git;
 use crate::output::Output;
+
+/// Custom Result type for Godo operations
+pub type Result<T> = std::result::Result<T, GodoError>;
+
+/// Godo-specific error types
+#[derive(Error, Debug)]
+pub enum GodoError {
+    #[error("Command exited with status code: {code}")]
+    CommandExit { code: i32 },
+
+    #[error("Sandbox error: {message}")]
+    SandboxError { name: String, message: String },
+
+    #[error("Aborted by user")]
+    UserAborted,
+
+    #[error("Context error: {0}")]
+    ContextError(String),
+
+    #[error("Operation failed: {0}")]
+    OperationError(String),
+
+    #[error("Output operation failed: {0}")]
+    OutputError(#[from] crate::output::OutputError),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
 
 enum PostRunAction {
     Commit,
@@ -74,16 +102,20 @@ impl Sandbox {
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
 fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        anyhow::bail!("sandbox name cannot be empty");
+        return Err(GodoError::SandboxError {
+            name: name.to_string(),
+            message: "names can only contain letters, numbers, hyphens, and underscores".to_string(),
+        });
     }
 
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        anyhow::bail!(
-            "Invalid sandbox name '{name}': names can only contain letters, numbers, hyphens, and underscores",
-        );
+        return Err(GodoError::SandboxError {
+            name: name.to_string(),
+            message: "names can only contain letters, numbers, hyphens, and underscores".to_string(),
+        });
     }
 
     Ok(())
@@ -123,7 +155,9 @@ fn project_name(repo_path: &Path) -> Result<String> {
     let cleaned = clean_name(name);
 
     if cleaned.is_empty() {
-        anyhow::bail!("Could not derive a valid project name from repository path");
+        return Err(GodoError::ContextError(
+            "Could not derive a valid project name from repository path".to_string()
+        ));
     }
 
     Ok(cleaned)
@@ -147,7 +181,7 @@ impl Godo {
         repo_dir: Option<PathBuf>,
         output: Arc<dyn Output>,
         no_prompt: bool,
-    ) -> Result<Self> {
+    ) -> anyhow::Result<Self> {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
 
@@ -156,8 +190,13 @@ impl Godo {
             dir
         } else {
             // Find git root from current directory
-            let current_dir = std::env::current_dir().context("Failed to get current directory")?;
-            git::find_root(&current_dir).context("Not in a git repository")?
+            let current_dir =
+                std::env::current_dir().map_err(|_| GodoError::ContextError(
+                    "Failed to get current directory".to_string()
+                ))?;
+            git::find_root(&current_dir).ok_or(GodoError::ContextError(
+                "Not in a git repository".to_string()
+            ))?
         };
 
         Ok(Self {
@@ -182,7 +221,8 @@ impl Godo {
     /// Prompt the user for what to do after command execution
     fn prompt_for_action(&self, sandbox_path: &Path) -> Result<PostRunAction> {
         // Check if there are uncommitted changes
-        let has_changes = git::has_uncommitted_changes(sandbox_path)?;
+        let has_changes = git::has_uncommitted_changes(sandbox_path)
+            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
 
         let prompt = if has_changes {
             "Command completed. You have uncommitted changes. What would you like to do?"
@@ -226,15 +266,20 @@ impl Godo {
                     "Using existing sandbox {sandbox_name} at {sandbox_path:?}"
                 ))?;
             } else {
-                anyhow::bail!("Sandbox '{sandbox_name}' exists but is not live - remove it first");
+                return Err(GodoError::SandboxError {
+                    name: sandbox_name.to_string(),
+                    message: "exists but is not live - remove it first".to_string(),
+                });
             }
         } else {
             // Sandbox doesn't exist, create it
             // Check for uncommitted changes
-            if git::has_uncommitted_changes(&self.repo_dir)? {
+            if git::has_uncommitted_changes(&self.repo_dir)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?
+            {
                 self.output.warn("You have uncommitted changes:")?;
                 if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
-                    anyhow::bail!("Aborted by user");
+                    return Err(GodoError::UserAborted);
                 }
             }
 
@@ -246,7 +291,8 @@ impl Godo {
             self.output.message(&format!(
                 "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
             ))?;
-            git::create_worktree(&self.repo_dir, &sandbox_path, &branch)?;
+            git::create_worktree(&self.repo_dir, &sandbox_path, &branch)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
 
             self.output.message("Cloning tree to sandbox...")?;
 
@@ -258,7 +304,7 @@ impl Godo {
             }
 
             clone_tree(&self.repo_dir, &sandbox_path, &clone_options)
-                .context("Failed to clone files to sandbox")?;
+                .map_err(|e| GodoError::OperationError(format!("Failed to clone files to sandbox: {}", e)))?;
         }
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
@@ -267,7 +313,7 @@ impl Godo {
             Command::new(&shell)
                 .current_dir(&sandbox_path)
                 .status()
-                .context("Failed to start shell")?
+                .map_err(|e| GodoError::OperationError(format!("Failed to start shell: {}", e)))?
         } else {
             // Run the specified command
             let command_string = command.join(" ");
@@ -276,21 +322,25 @@ impl Godo {
                 .arg(&command_string)
                 .current_dir(&sandbox_path)
                 .status()
-                .context("Failed to run command")?
+                .map_err(|e| GodoError::OperationError(format!("Failed to run command: {}", e)))?
         };
 
         if !status.success() {
-            anyhow::bail!("Command exited with status: {status}");
+            // Extract the actual exit code
+            let exit_code = status.code().unwrap_or(1);
+            return Err(GodoError::CommandExit { code: exit_code });
         }
 
         // Handle automatic commit if specified
         if let Some(commit_message) = commit {
             self.output.message("Staging and committing changes...")?;
             // Stage all changes
-            git::add_all(&sandbox_path)?;
+            git::add_all(&sandbox_path).map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
             // Commit with the provided message
-            git::commit(&sandbox_path, &commit_message)?;
-            self.output.success(&format!("Committed with message: {}", commit_message))?;
+            git::commit(&sandbox_path, &commit_message)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
+            self.output
+                .success(&format!("Committed with message: {commit_message}"))?;
             // Clean up after commit
             self.cleanup_sandbox(sandbox_name)?;
         } else if !keep {
@@ -301,9 +351,11 @@ impl Godo {
                     PostRunAction::Commit => {
                         self.output.message("Staging and committing changes...")?;
                         // Stage all changes
-                        git::add_all(&sandbox_path)?;
+                        git::add_all(&sandbox_path)
+                            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
                         // Commit with verbose flag
-                        git::commit_interactive(&sandbox_path)?;
+                        git::commit_interactive(&sandbox_path)
+                            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
                         // Clean up after commit
                         self.cleanup_sandbox(sandbox_name)?;
                         break; // Exit the loop after commit
@@ -314,7 +366,7 @@ impl Godo {
                         let shell_status = Command::new(&shell)
                             .current_dir(&sandbox_path)
                             .status()
-                            .context("Failed to start shell")?;
+                            .map_err(|e| GodoError::OperationError(format!("Failed to start shell: {}", e)))?;
 
                         if !shell_status.success() {
                             self.output.warn("Shell exited with non-zero status")?;
@@ -341,10 +393,12 @@ impl Godo {
         let branch_name = branch_name(name);
 
         // Check if branch exists
-        let has_branch = git::has_branch(&self.repo_dir, &branch_name)?;
+        let has_branch = git::has_branch(&self.repo_dir, &branch_name)
+            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
 
         // Get all worktrees to check if this sandbox has a worktree
-        let worktrees = git::list_worktrees(&self.repo_dir)?;
+        let worktrees =
+            git::list_worktrees(&self.repo_dir).map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
         let has_worktree = worktrees.iter().any(|w| {
             let branch = w.branch.strip_prefix("refs/heads/").unwrap_or(&w.branch);
             branch == branch_name
@@ -391,14 +445,17 @@ impl Godo {
 
         let mut all_names = std::collections::HashSet::new();
 
-        let all_branches = git::list_branches(&self.repo_dir)?;
+        let all_branches =
+            git::list_branches(&self.repo_dir).map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
         for branch in &all_branches {
             if let Some(name) = branch.strip_prefix("godo/") {
                 all_names.insert(name.to_string());
             }
         }
 
-        for worktree in git::list_worktrees(&self.repo_dir)? {
+        for worktree in
+            git::list_worktrees(&self.repo_dir).map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?
+        {
             let branch = worktree
                 .branch
                 .strip_prefix("refs/heads/")
@@ -428,7 +485,7 @@ impl Godo {
         }
 
         // Display each sandbox with its attributes
-        for name in sorted_names {
+        for name in &sorted_names {
             match self.get_sandbox(&name)? {
                 Some(status) => {
                     status.show(&*self.output)?;
@@ -446,7 +503,12 @@ impl Godo {
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
         let status = match self.get_sandbox(name)? {
             Some(s) => s,
-            None => anyhow::bail!("sandbox '{name}' does not exist"),
+            None => {
+                return Err(GodoError::SandboxError {
+                    name: name.to_string(),
+                    message: "does not exist".to_string(),
+                });
+            }
         };
 
         if !force {
@@ -455,14 +517,14 @@ impl Godo {
                     .output
                     .confirm("Sandbox has uncommitted changes. Remove anyway?")?
             {
-                anyhow::bail!("Aborted by user");
+                return Err(GodoError::UserAborted);
             }
             if status.has_unmerged_commits
                 && !self
                     .output
                     .confirm("Branch has unmerged commits. Remove anyway?")?
             {
-                anyhow::bail!("Aborted by user");
+                return Err(GodoError::UserAborted);
             }
         }
 
@@ -491,14 +553,16 @@ impl Godo {
 
         // Remove the worktree if it exists and has no uncommitted changes
         if status.has_worktree && !status.has_uncommitted_changes {
-            git::remove_worktree(&self.repo_dir, &sandbox_path, false)?;
+            git::remove_worktree(&self.repo_dir, &sandbox_path, false)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
             self.output.message("\tremoved unmodified worktree")?;
             worktree_removed = true;
         }
 
         // Clean up the directory if it still exists and worktree was removed
         if !status.has_worktree && status.has_worktree_dir {
-            fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
+            fs::remove_dir_all(&sandbox_path)
+                .map_err(|e| GodoError::OperationError(format!("Failed to remove sandbox directory: {}", e)))?;
         }
 
         // Only remove the branch if:
@@ -509,7 +573,8 @@ impl Godo {
             && !status.has_unmerged_commits
             && (worktree_removed || !status.has_worktree)
         {
-            git::delete_branch(&self.repo_dir, &branch, false)?;
+            git::delete_branch(&self.repo_dir, &branch, false)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?;
             branch_removed = true;
         }
 
@@ -532,20 +597,28 @@ impl Godo {
         // Get sandbox status to check current state
         let status = match self.get_sandbox(name)? {
             Some(s) => s,
-            None => anyhow::bail!("sandbox '{name}' does not exist"),
+            None => {
+                return Err(GodoError::SandboxError {
+                    name: name.to_string(),
+                    message: "does not exist".to_string(),
+                });
+            }
         };
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
 
         if status.has_worktree {
-            git::remove_worktree(&self.repo_dir, &sandbox_path, true)?
+            git::remove_worktree(&self.repo_dir, &sandbox_path, true)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?
         }
         if sandbox_path.exists() {
-            fs::remove_dir_all(&sandbox_path).context("Failed to remove sandbox directory")?;
+            fs::remove_dir_all(&sandbox_path)
+                .map_err(|e| GodoError::OperationError(format!("Failed to remove sandbox directory: {}", e)))?;
         }
         if status.has_branch {
-            git::delete_branch(&self.repo_dir, &branch, true)?
+            git::delete_branch(&self.repo_dir, &branch, true)
+                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {}", e)))?
         }
 
         Ok(())

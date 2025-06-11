@@ -8,7 +8,7 @@ use std::sync::Arc;
 mod git;
 mod godo;
 mod output;
-use godo::Godo;
+use godo::{Godo, GodoError};
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
 
@@ -84,7 +84,6 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -122,11 +121,19 @@ fn main() -> Result<()> {
         print!("\x1b[0m");
         let _ = std::io::stdout().flush();
 
-        // Use the output handler to display the error
-        let _ = output.fail(&format!("{e:#}"));
-        let _ = output.finish();
+        // Check if this is a GodoError::CommandExit to get the specific exit code
+        let exit_code = if let Some(GodoError::CommandExit { code }) = e.downcast_ref::<GodoError>()
+        {
+            // Don't display error message for command exit errors
+            *code
+        } else {
+            // Use the output handler to display the error
+            let _ = output.fail(&format!("{e:#}"));
+            let _ = output.finish();
+            1
+        };
 
-        std::process::exit(1);
+        std::process::exit(exit_code);
     }
     Ok(())
 }

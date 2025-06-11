@@ -146,3 +146,163 @@ fn test_project_name_cleaning() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_exit_code_propagation() -> Result<()> {
+    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let godo_dir = TempDir::new()?;
+    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
+
+    // Test 1: Command exits with code 0
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--keep",
+            "test-exit-0",
+            "exit",
+            "0",
+        ])
+        .output()?;
+
+    assert!(output.status.success(), "exit 0 should succeed");
+    assert_eq!(output.status.code(), Some(0), "Should exit with code 0");
+
+    // Test 2: Command exits with code 1
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--keep",
+            "test-exit-1",
+            "exit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "exit 1 should fail");
+    assert_eq!(output.status.code(), Some(1), "Should exit with code 1");
+
+    // Test 3: Command exits with code 42
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--keep",
+            "test-exit-42",
+            "exit",
+            "42",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "exit 42 should fail");
+    assert_eq!(output.status.code(), Some(42), "Should exit with code 42");
+
+    // Test 4: Command that doesn't exist (typically exits with 127)
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--keep",
+            "test-not-found",
+            "thiscommanddoesnotexist",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "non-existent command should fail");
+    // Shell typically returns 127 for command not found
+    assert_eq!(
+        output.status.code(),
+        Some(127),
+        "Should exit with code 127 for command not found"
+    );
+
+    // Cleanup
+    for sandbox in [
+        "test-exit-0",
+        "test-exit-1",
+        "test-exit-42",
+        "test-not-found",
+    ] {
+        let _ = Command::new(&godo_binary)
+            .current_dir(&repo_path)
+            .args([
+                "--dir",
+                godo_dir.path().to_str().unwrap(),
+                "remove",
+                "--force",
+                sandbox,
+            ])
+            .output();
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_exit_code_with_auto_commit() -> Result<()> {
+    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let godo_dir = TempDir::new()?;
+    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
+
+    // Test 1: Successful command with --commit should exit 0
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--commit",
+            "Test commit",
+            "test-exit-commit-success",
+            "touch",
+            "newfile.txt",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!("exit code: {:?}", output.status.code());
+    }
+    assert!(
+        output.status.success(),
+        "successful command with --commit should succeed"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Should exit with code 0 for successful command"
+    );
+
+    // Test 2: Failed command with --commit should propagate the exit code
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--commit",
+            "Test commit",
+            "test-exit-commit-fail",
+            "false", // false command always exits with 1
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "false command should fail");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Should exit with code 1 for false command"
+    );
+
+    Ok(())
+}
