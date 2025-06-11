@@ -19,12 +19,22 @@ changes are committed to a branch you can merge whenever you like.
 Want to contribute? Have ideas or feature requests? Come tell us about it on
 [Discord](https://discord.gg/fHmRmuBDxF). 
 
+
+---
+
+## Installation
+
+```bash
+cargo install godo
+```
+
 ---
 
 ## Quick start
 
+Run `cargo fmt` in an isolated workspace that disappears when done:
+
 ```bash
-# Run rustfmt in an isolated workspace that disappears when done
 $ godo run format cargo fmt
 ```
 
@@ -49,70 +59,69 @@ $ godo run format cargo fmt
 
 ## Command guide
 
-### Global options
-
-* `--dir <DIR>` - Override the default godo directory location (`~/.godo`).
-* `GODO_DIR` environment variable - Set a custom godo directory location.
-
-Priority: `--dir` flag > `GODO_DIR` env var > default `~/.godo`
-
-### `godo run`
-
-```
-godo run [--keep] [--copy <glob>]... <name> [COMMAND]
-```
-
-* `--keep` - keep the sandbox after the command exits.  Handy for manual
-  inspection or re‑runs.
-* `--copy <glob>` - copy only directories that match `glob` into the sandbox.
-  You can specify this flag multiple times.  If you omit it, **all** untracked
-  items are copied.
-* If you omit `COMMAND`, `godo` drops you into an interactive shell inside the
-  sandbox.
-
----
-
-### `godo list`
-
-Shows existing sandboxes that are still on disk (either running or created with `--keep`).
-
-### `godo rm <name>`
-
-Deletes the named sandbox directory and detaches its worktree.
-
-
----
-
-## Installation
-
 ```bash
-cargo install godo
+Usage: godo [OPTIONS] <COMMAND>
+
+Commands:
+  run     Run a command in an isolated workspace
+  list    Show existing sandboxes
+  remove  Delete a named sandbox
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --dir <DIR>       Override the godo directory location
+      --repo-dir <DIR>  Override the repository directory (defaults to current git project)
+      --color           Enable colored output
+      --no-color        Disable colored output
+      --quiet           Suppress all output
+      --no-prompt       Skip confirmation prompts
+  -h, --help            Print help
+  -V, --version         Print version
 ```
-
-**Requirements**
-
-* macOS 11 or newer (APFS)
-* Git ≥ 2.30
 
 ---
 
 ## How it works
 
-1. **Detect repository** - walks up from the current directory until a `.git`
-   folder is found.
-2. **Create worktree** - `git worktree add --quiet ~/.godo/<name> HEAD`
-   shares the parent repository’s object database, so no blobs are duplicated.
-3. **Copy resources** - for each pattern given with `--copy` (or for every
-   untracked item if no patterns) `godo` runs `cp -cR <resource>
-   ~/.godo/<name>/`.  APFS performs a `clonefile(2)` call, so the copy is
-   instant and copy‑on‑write.
-4. **Run command or shell** - executes `$SHELL -c "<COMMAND>"` inside the
-   sandbox, or opens an interactive shell if no command was supplied.  All
-   writes stay inside the sandbox.
-5. **Commit results** - switches to `godo/<name>`, stages changes, prompts for
-   a commit message, and writes the commit. The branch is already attached to
-   the parent repository.
-6. **Cleanup** - unless `--keep` was specified, `godo` runs `git worktree
-   remove --force ~/.godo/<name>` and deletes the sandbox directory.
+1. **Detect repository**  
+   From the current directory (or `--repo-dir` if specified), walks up until a
+   `.git` folder is found to identify the parent Git repository.
 
+2. **Prepare sandbox workspace**  
+   Ensures the root godo directory (default `~/.godo`, configurable via `--dir`
+   or `GODO_DIR`) and per-project subdirectory exist, then runs:
 
+   ```bash
+   git worktree add --quiet -b godo/<name> ~/.godo/<project>/<name>
+   ```
+
+   to create a new worktree on branch `godo/<name>` at `HEAD` without duplicating
+   objects.
+
+3. **Clone the file tree**  
+   Uses the [clonetree](https://github.com/cortesi/clonetree) crate to clone
+   the repository tree into the sandbox, skipping `.git/` and applying any
+   `--exclude <glob>` patterns. On CoW-enabled filesystems (e.g. APFS) this
+   leverages `clonefile(2)` for instant copy-on-write clones.
+
+4. **Run the command or shell**  
+   Invokes `$SHELL -c "<COMMAND>"` (or drops into an interactive shell if no
+   command is provided) inside the sandbox, so all writes and changes remain
+   isolated.
+
+5. **Commit or keep results**  
+   Unless `--keep` is specified, godo prompts to:
+
+   - **commit:** stage all changes (`git add .`) and run `git commit --verbose`
+     on branch `godo/<name>`.
+   - **shell:** open an interactive shell in the sandbox (then clean up on exit).
+   - **keep:** leave the sandbox intact for manual inspection or re-runs.
+
+6. **Cleanup**  
+   After committing (or after the optional shell stage), godo automatically
+   removes the worktree (`git worktree remove`) and deletes the sandbox directory.
+   If the `godo/<name>` branch has no unmerged commits, the branch is also
+   deleted.
+
+7. You can now merge the changes from `godo/<name>` into your main branch
+   whenever you like.
