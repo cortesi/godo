@@ -119,7 +119,7 @@ fn main() -> Result<()> {
         let _ = std::io::stdout().flush();
 
         // Use the output handler to display the error
-        let _ = output.fail(&format!("Error: {e:#}"));
+        let _ = output.fail(&format!("{e:#}"));
         let _ = output.finish();
 
         std::process::exit(1);
