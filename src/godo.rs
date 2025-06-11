@@ -131,7 +131,7 @@ impl Godo {
         // Check for uncommitted changes
         if git::has_uncommitted_changes(&self.repo_dir)? {
             self.output.warn("Warning: You have uncommitted changes:")?;
-            if !self.no_prompt && !self.output.confirm("Continue creating worktree? [y/N]")? {
+            if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
                 anyhow::bail!("Aborted by user");
             }
         }
@@ -190,7 +190,7 @@ impl Godo {
             git::add_all(&sandbox_path)?;
 
             // Commit with verbose flag
-            git::commit_verbose(&sandbox_path)?;
+            git::commit_interactive(&sandbox_path)?;
         }
 
         // Clean up if not keeping
@@ -202,7 +202,6 @@ impl Godo {
     }
 
     pub fn list(&self) -> Result<()> {
-        let project = project_name(&self.repo_dir)?;
         let project_dir = self.project_dir()?;
 
         // Get all worktrees from git
@@ -260,11 +259,6 @@ impl Godo {
                 }
             }
         }
-
-        // Display results
-        self.output
-            .message(&format!("Sandboxes for project '{project}':"))?;
-        self.output.message("")?;
 
         // Active sandboxes
         if !active_sandboxes.is_empty() {
