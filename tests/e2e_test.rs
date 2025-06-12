@@ -344,3 +344,67 @@ fn test_sandbox_reuse_exit_code() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_cleanup_sandbox_removes_merged_branch_without_worktree() -> Result<()> {
+    let env = TestEnv::new()?;
+
+    // Create a sandbox and make a commit
+    env.run_in_sandbox("test-cleanup", &["touch", "file.txt"])?;
+
+    // Add and commit the file in the sandbox
+    let sandbox_path = env.godo_dir.join("test-repo").join("test-cleanup");
+    Command::new("git")
+        .current_dir(&sandbox_path)
+        .args(["add", "file.txt"])
+        .output()?;
+    Command::new("git")
+        .current_dir(&sandbox_path)
+        .args(["commit", "-m", "Add file"])
+        .output()?;
+
+    // Merge the branch back to main/master
+    Command::new("git")
+        .current_dir(&env.repo_dir)
+        .args(["merge", "godo/test-cleanup"])
+        .output()?;
+
+    // Remove just the worktree, keeping the branch
+    Command::new("git")
+        .current_dir(&env.repo_dir)
+        .args(["worktree", "remove", sandbox_path.to_str().unwrap()])
+        .output()?;
+
+    // Verify branch still exists
+    let branches_output = Command::new("git")
+        .current_dir(&env.repo_dir)
+        .args(["branch", "--list", "godo/test-cleanup"])
+        .output()?;
+    let branches_str = String::from_utf8_lossy(&branches_output.stdout);
+    assert!(
+        branches_str.contains("godo/test-cleanup"),
+        "Branch should exist before cleanup"
+    );
+
+    // Run clean command
+    let clean_output = env.run_godo(&["clean", "test-cleanup"])?;
+    if !clean_output.status.success() {
+        eprintln!("Clean command failed:");
+        eprintln!("stdout: {}", String::from_utf8_lossy(&clean_output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&clean_output.stderr));
+    }
+    assert!(clean_output.status.success());
+
+    // Verify branch was removed
+    let branches_after_output = Command::new("git")
+        .current_dir(&env.repo_dir)
+        .args(["branch", "--list", "godo/test-cleanup"])
+        .output()?;
+    let branches_after_str = String::from_utf8_lossy(&branches_after_output.stdout);
+    assert!(
+        !branches_after_str.contains("godo/test-cleanup"),
+        "Branch should be removed after cleanup"
+    );
+
+    Ok(())
+}

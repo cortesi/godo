@@ -385,7 +385,7 @@ fn test_clean_command_section_output() -> Result<()> {
         "Should show total count"
     );
     assert!(
-        stdout.contains("Cleaning up sandbox:"),
+        stdout.contains("cleaning sandbox:"),
         "Should have section headers"
     );
 

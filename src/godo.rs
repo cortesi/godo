@@ -603,16 +603,9 @@ impl Godo {
                     }
                 };
 
-                // Only clean if the sandbox has a worktree
-                if !status.has_worktree {
-                    return Err(GodoError::SandboxError {
-                        name: name.to_string(),
-                        message: "has no worktree to clean".to_string(),
-                    });
-                }
-
-                // Warn if there are uncommitted changes
-                if status.has_uncommitted_changes
+                // Warn if there are uncommitted changes (only if worktree exists)
+                if status.has_worktree
+                    && status.has_uncommitted_changes
                     && !self.no_prompt
                     && !self
                         .output
@@ -631,6 +624,9 @@ impl Godo {
                     self.output.message("No sandboxes to clean")?;
                     return Ok(());
                 }
+
+                self.output
+                    .message(&format!("Cleaning {} sandboxes...", all_names.len()))?;
 
                 for sandbox_name in all_names {
                     if let Err(e) = self.cleanup_sandbox(&sandbox_name) {
@@ -682,8 +678,11 @@ impl Godo {
         // Only remove the branch if:
         // 1. It exists
         // 2. It has no unmerged commits
-        // 3. We successfully removed the worktree
-        if status.has_branch && !status.has_unmerged_commits && worktree_removed {
+        // 3. Either we successfully removed the worktree OR (there was no worktree to begin with AND no worktree directory exists)
+        if status.has_branch
+            && !status.has_unmerged_commits
+            && (worktree_removed || (!status.has_worktree && !status.has_worktree_dir))
+        {
             git::delete_branch(&self.repo_dir, &branch, false)
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
             branch_removed = true;
@@ -692,10 +691,14 @@ impl Godo {
         // Report what was done
         if worktree_removed && branch_removed {
             section.success("unmodified sandbox and branch cleaned up")?;
-        } else if worktree_removed {
+        } else if worktree_removed && !branch_removed {
             section.success(&format!("worktree removed, branch {branch} kept"))?;
+        } else if !status.has_worktree && branch_removed {
+            section.success(&format!("fully merged branch {branch} removed"))?;
         } else if status.has_worktree && status.has_uncommitted_changes {
             section.warn("not cleaned: has uncommitted changes")?;
+        } else if status.has_branch && status.has_unmerged_commits {
+            section.warn(&format!("branch {branch} has unmerged commits"))?;
         } else {
             section.message("unchanged")?;
         }
