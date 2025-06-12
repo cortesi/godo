@@ -415,3 +415,68 @@ fn test_clean_command_section_output() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_sandbox_protection() -> Result<()> {
+    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let godo_dir = TempDir::new()?;
+    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
+
+    // First, create a sandbox
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "run",
+            "--keep",
+            "test-sandbox",
+            "echo",
+            "test",
+        ])
+        .output()?;
+
+    assert!(output.status.success(), "Creating sandbox should succeed");
+
+    // Find the sandbox directory
+    let project_dir = godo_dir.path().join("test-project");
+    let sandbox_dir = project_dir.join("test-sandbox");
+    assert!(sandbox_dir.exists(), "Sandbox directory should exist");
+
+    // Now try to run godo from within the sandbox
+    let output = Command::new(&godo_binary)
+        .current_dir(&sandbox_dir)
+        .args(["--dir", godo_dir.path().to_str().unwrap(), "list"])
+        .output()?;
+
+    // Should fail with our specific error message
+    assert!(
+        !output.status.success(),
+        "Running godo from sandbox should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The error might be in stdout or stderr depending on how anyhow displays it
+    let combined_output = format!("{}{}", stdout, stderr);
+    assert!(
+        combined_output.contains("Cannot run godo from within a godo sandbox"),
+        "Should show sandbox protection error, got stdout: '{}', stderr: '{}'",
+        stdout,
+        stderr
+    );
+
+    // Verify we can still run godo from outside the sandbox
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args(["--dir", godo_dir.path().to_str().unwrap(), "list"])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "Running godo from outside sandbox should succeed"
+    );
+
+    Ok(())
+}

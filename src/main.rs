@@ -2,7 +2,7 @@ use crate::output::Output;
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod git;
@@ -101,6 +101,21 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Check if the current working directory is inside a godo sandbox
+fn is_inside_godo_sandbox(godo_dir: &Path) -> Result<bool> {
+    let current_dir = std::env::current_dir()?;
+    let canonical_godo_dir = godo_dir
+        .canonicalize()
+        .unwrap_or_else(|_| godo_dir.to_path_buf());
+
+    // Check if current directory is under the godo directory
+    if let Ok(canonical_current) = current_dir.canonicalize() {
+        return Ok(canonical_current.starts_with(&canonical_godo_dir));
+    }
+
+    Ok(false)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -153,6 +168,11 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
     } else {
         expand_tilde(DEFAULT_GODO_DIR)
     };
+
+    // Check if we're running from inside a godo sandbox
+    if is_inside_godo_sandbox(&godo_dir)? {
+        anyhow::bail!("Cannot run godo from within a godo sandbox");
+    }
 
     // Determine repository directory
     let repo_dir = cli.repo_dir.as_ref().map(|repo| expand_tilde(repo));
