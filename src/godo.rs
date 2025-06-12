@@ -632,6 +632,9 @@ impl Godo {
                     return Ok(());
                 }
 
+                self.output
+                    .message(&format!("Cleaning {} sandboxes...", all_names.len()))?;
+
                 for sandbox_name in all_names {
                     if let Err(e) = self.cleanup_sandbox(&sandbox_name) {
                         self.output
@@ -654,8 +657,7 @@ impl Godo {
             }
         };
 
-        self.output
-            .message(&format!("cleaning up sandbox {name}..."))?;
+        let section = self.output.section(&format!("Cleaning up sandbox: {name}"));
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
@@ -667,11 +669,10 @@ impl Godo {
         if status.has_worktree && !status.has_uncommitted_changes {
             git::remove_worktree(&self.repo_dir, &sandbox_path, false)
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
-            self.output.message("\tremoved unmodified worktree")?;
+            section.message("removed unmodified worktree")?;
             worktree_removed = true;
         } else if status.has_worktree && status.has_uncommitted_changes {
-            self.output
-                .message("\tskipping worktree with uncommitted changes")?;
+            section.message("skipping worktree with uncommitted changes")?;
         }
 
         // Clean up the directory if it still exists and worktree was removed
@@ -693,17 +694,13 @@ impl Godo {
 
         // Report what was done
         if worktree_removed && branch_removed {
-            self.output
-                .success("unmodified sandbox and branch cleaned up")?;
+            section.success("unmodified sandbox and branch cleaned up")?;
         } else if worktree_removed {
-            self.output
-                .success(&format!("worktree removed, branch {branch} kept"))?;
+            section.success(&format!("worktree removed, branch {branch} kept"))?;
         } else if status.has_worktree && status.has_uncommitted_changes {
-            self.output.warn(&format!(
-                "sandbox {name} not cleaned: has uncommitted changes"
-            ))?;
+            section.warn("not cleaned: has uncommitted changes")?;
         } else {
-            self.output.message(&format!("sandbox {name} unchanged"))?;
+            section.message("unchanged")?;
         }
 
         Ok(())
@@ -950,6 +947,12 @@ mod tests {
 
         fn finish(&self) -> crate::output::Result<()> {
             Ok(())
+        }
+
+        fn section(&self, _header: &str) -> Box<dyn Output> {
+            Box::new(MockOutput {
+                selection: self.selection,
+            })
         }
     }
 

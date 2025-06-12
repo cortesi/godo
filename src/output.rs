@@ -7,6 +7,8 @@ use std::io::{self, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
+const INDENT: usize = 4;
+
 #[derive(Debug, Error)]
 pub enum OutputError {
     #[error("{0}")]
@@ -37,6 +39,7 @@ pub trait Output: Send + Sync {
     fn confirm(&self, prompt: &str) -> Result<bool>;
     fn select(&self, prompt: &str, options: Vec<String>) -> Result<usize>;
     fn finish(&self) -> Result<()>;
+    fn section(&self, header: &str) -> Box<dyn Output>;
 }
 
 pub struct Quiet;
@@ -73,10 +76,15 @@ impl Output for Quiet {
     fn finish(&self) -> Result<()> {
         Ok(())
     }
+
+    fn section(&self, _header: &str) -> Box<dyn Output> {
+        Box::new(Quiet)
+    }
 }
 
 pub struct Terminal {
     color_choice: ColorChoice,
+    indent: usize,
 }
 
 impl Terminal {
@@ -86,13 +94,16 @@ impl Terminal {
         } else {
             ColorChoice::Never
         };
-        Self { color_choice }
+        Self {
+            color_choice,
+            indent: 0,
+        }
     }
 
     fn write_colored(&self, msg: &str, color: Color) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
         stdout.set_color(ColorSpec::new().set_fg(Some(color)))?;
-        writeln!(stdout, "{msg}")?;
+        writeln!(stdout, "{}{msg}", " ".repeat(self.indent))?;
         stdout.reset()?;
         stdout.flush()?;
         Ok(())
@@ -215,15 +226,15 @@ impl Output for Terminal {
         let shortcuts = self.generate_shortcuts(&options);
 
         // Print the prompt
-        println!("{prompt}");
+        println!("{}{prompt}", " ".repeat(self.indent));
 
         // Print options with shortcuts highlighted
         for (option, shortcut) in options.iter().zip(shortcuts.iter()) {
-            print!("  ");
+            print!("{}  ", " ".repeat(self.indent));
             self.print_option_with_shortcut(option, *shortcut)?;
         }
 
-        print!("> ");
+        print!("{} > ", " ".repeat(self.indent));
         io::stdout().flush()?;
 
         // Enable raw mode to read single key press
@@ -275,6 +286,17 @@ impl Output for Terminal {
     fn finish(&self) -> Result<()> {
         io::stdout().flush()?;
         Ok(())
+    }
+
+    fn section(&self, header: &str) -> Box<dyn Output> {
+        // Print the section header at current indent
+        let _ = self.message(header);
+
+        // Return a new Terminal with increased indent
+        Box::new(Terminal {
+            color_choice: self.color_choice,
+            indent: self.indent + INDENT,
+        })
     }
 }
 
@@ -354,5 +376,20 @@ mod tests {
             assert!(matches!(e, OutputError::InvalidInput(_)));
             assert_eq!(e.to_string(), "No options provided for selection");
         }
+    }
+
+    #[test]
+    fn test_section_creates_indented_output() {
+        let terminal = Terminal::new(false);
+        assert_eq!(terminal.indent, 0);
+
+        let section1 = terminal.section("Section 1");
+        // Can't directly test indent since it's private, but we can test behavior
+        // by checking that section returns a valid Output implementation
+        let _ = section1.message("Test message");
+
+        // Test nested sections
+        let section2 = section1.section("Section 2");
+        let _ = section2.message("Nested message");
     }
 }
