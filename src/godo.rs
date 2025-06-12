@@ -446,12 +446,13 @@ impl Godo {
         let has_branch = git::has_branch(&self.repo_dir, &branch_name)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
 
-        // Get all worktrees to check if this sandbox has a worktree
+        // Get all worktrees to check if this sandbox has a worktree attached in the godo directory
         let worktrees = git::list_worktrees(&self.repo_dir)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
         let has_worktree = worktrees.iter().any(|w| {
             let branch = w.branch.strip_prefix("refs/heads/").unwrap_or(&w.branch);
-            branch == branch_name
+            // Check both that the branch matches AND the worktree path is the expected sandbox path
+            branch == branch_name && w.path == sandbox_path
         });
 
         // Check if the worktree directory exists
