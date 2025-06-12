@@ -632,9 +632,6 @@ impl Godo {
                     return Ok(());
                 }
 
-                self.output
-                    .message(&format!("Cleaning {} sandboxes...", all_names.len()))?;
-
                 for sandbox_name in all_names {
                     if let Err(e) = self.cleanup_sandbox(&sandbox_name) {
                         self.output
@@ -657,7 +654,7 @@ impl Godo {
             }
         };
 
-        let section = self.output.section(&format!("Cleaning up sandbox: {name}"));
+        let section = self.output.section(&format!("cleaning sandbox: {name}"));
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
