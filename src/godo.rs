@@ -72,18 +72,20 @@ impl Sandbox {
     fn show(&self, output: &dyn Output) -> Result<()> {
         let mut attributes = Vec::new();
 
-        if self.is_live() {
-            attributes.push("live");
-        } else if self.has_branch {
-            attributes.push("branch only");
+        if self.has_branch {
+            if self.has_unmerged_commits {
+                attributes.push("branch [unmerged]");
+            } else {
+                attributes.push("branch [merged]");
+            }
         }
 
-        if self.has_uncommitted_changes {
-            attributes.push("uncommitted changes");
-        }
-
-        if self.has_unmerged_commits {
-            attributes.push("unmerged");
+        if self.has_worktree {
+            if self.has_uncommitted_changes {
+                attributes.push("worktree [uncommitted]");
+            } else {
+                attributes.push("worktree [clean]");
+            }
         }
 
         if self.is_dangling {
