@@ -490,7 +490,7 @@ impl Godo {
         }))
     }
 
-    pub fn list(&self) -> Result<()> {
+    fn all_sandbox_names(&self) -> Result<Vec<String>> {
         let project_dir = self.project_dir()?;
 
         let mut all_names = std::collections::HashSet::new();
@@ -528,6 +528,12 @@ impl Godo {
         // Sort all names alphabetically
         let mut sorted_names: Vec<String> = all_names.into_iter().collect();
         sorted_names.sort();
+
+        Ok(sorted_names)
+    }
+
+    pub fn list(&self) -> Result<()> {
+        let sorted_names = self.all_sandbox_names()?;
 
         if sorted_names.is_empty() {
             self.output.message("No sandboxes found.")?;
@@ -582,6 +588,61 @@ impl Godo {
         self.remove_sandbox(name)
     }
 
+    pub fn clean(&self, name: Option<&str>) -> Result<()> {
+        match name {
+            Some(name) => {
+                // Clean specific sandbox
+                let status = match self.get_sandbox(name)? {
+                    Some(s) => s,
+                    None => {
+                        return Err(GodoError::SandboxError {
+                            name: name.to_string(),
+                            message: "does not exist".to_string(),
+                        });
+                    }
+                };
+
+                // Only clean if the sandbox has a worktree
+                if !status.has_worktree {
+                    return Err(GodoError::SandboxError {
+                        name: name.to_string(),
+                        message: "has no worktree to clean".to_string(),
+                    });
+                }
+
+                // Warn if there are uncommitted changes
+                if status.has_uncommitted_changes
+                    && !self.no_prompt
+                    && !self
+                        .output
+                        .confirm("Sandbox has uncommitted changes. Clean anyway?")?
+                {
+                    return Err(GodoError::UserAborted);
+                }
+
+                self.cleanup_sandbox(name)
+            }
+            None => {
+                // Clean all sandboxes
+                let all_names = self.all_sandbox_names()?;
+
+                if all_names.is_empty() {
+                    self.output.message("No sandboxes to clean")?;
+                    return Ok(());
+                }
+
+                for sandbox_name in all_names {
+                    if let Err(e) = self.cleanup_sandbox(&sandbox_name) {
+                        self.output
+                            .warn(&format!("Failed to clean {sandbox_name}: {e}"))?;
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+
     /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits
     fn cleanup_sandbox(&self, name: &str) -> Result<()> {
         let status = match self.get_sandbox(name)? {
@@ -607,6 +668,9 @@ impl Godo {
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
             self.output.message("\tremoved unmodified worktree")?;
             worktree_removed = true;
+        } else if status.has_worktree && status.has_uncommitted_changes {
+            self.output
+                .message("\tskipping worktree with uncommitted changes")?;
         }
 
         // Clean up the directory if it still exists and worktree was removed
@@ -619,11 +683,8 @@ impl Godo {
         // Only remove the branch if:
         // 1. It exists
         // 2. It has no unmerged commits
-        // 3. We removed the worktree (or there was no worktree)
-        if status.has_branch
-            && !status.has_unmerged_commits
-            && (worktree_removed || !status.has_worktree)
-        {
+        // 3. We successfully removed the worktree
+        if status.has_branch && !status.has_unmerged_commits && worktree_removed {
             git::delete_branch(&self.repo_dir, &branch, false)
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
             branch_removed = true;
@@ -636,8 +697,12 @@ impl Godo {
         } else if worktree_removed {
             self.output
                 .success(&format!("worktree removed, branch {branch} kept"))?;
+        } else if status.has_worktree && status.has_uncommitted_changes {
+            self.output.warn(&format!(
+                "sandbox {name} not cleaned: has uncommitted changes"
+            ))?;
         } else {
-            self.output.message("")?;
+            self.output.message(&format!("sandbox {name} unchanged"))?;
         }
 
         Ok(())

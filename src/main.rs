@@ -84,6 +84,12 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Clean up a sandbox by removing worktree but keeping the branch
+    Clean {
+        /// Name of the sandbox to clean (if not specified, cleans all sandboxes)
+        name: Option<String>,
+    },
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -170,6 +176,9 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
         }
         Commands::Remove { name, force } => {
             godo.remove(&name, force)?;
+        }
+        Commands::Clean { name } => {
+            godo.clean(name.as_deref())?;
         }
     }
 
