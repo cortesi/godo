@@ -237,7 +237,7 @@ mod tests {
         let repo_path = temp_dir.path().to_path_buf();
 
         // Initialize git repository
-        run_git(&repo_path, &["init"])?;
+        run_git(&repo_path, &["init", "-b", "main"])?;
 
         // Configure git user for commits
         run_git(&repo_path, &["config", "user.email", "test@example.com"])?;
