@@ -147,6 +147,7 @@ fn test_project_name_cleaning() -> Result<()> {
     Ok(())
 }
 
+#[test]
 fn test_clean_command_section_output() -> Result<()> {
     let (_temp_dir, repo_path) = setup_test_repo()?;
     let godo_dir = TempDir::new()?;
