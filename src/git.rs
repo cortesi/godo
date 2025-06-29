@@ -226,6 +226,18 @@ pub fn has_unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<bool>
     }
 }
 
+/// Reset the working directory to match HEAD, removing all uncommitted changes
+pub fn reset_hard(repo_path: &Path) -> Result<()> {
+    run_git(repo_path, &["reset", "--hard", "HEAD"])?;
+    Ok(())
+}
+
+/// Clean untracked files and directories
+pub fn clean(repo_path: &Path) -> Result<()> {
+    run_git(repo_path, &["clean", "-fd"])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +617,45 @@ mod tests {
 
         // Verify no uncommitted changes remain
         assert!(!has_uncommitted_changes(&repo_path)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reset_hard_and_clean() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        // Create and commit a file
+        fs::write(repo_path.join("test.txt"), "initial content")?;
+        run_git(&repo_path, &["add", "test.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Initial commit"])?;
+
+        // Modify the file and create a new untracked file
+        fs::write(repo_path.join("test.txt"), "modified content")?;
+        fs::write(repo_path.join("untracked.txt"), "untracked content")?;
+
+        // Should have uncommitted changes
+        assert!(has_uncommitted_changes(&repo_path)?);
+
+        // Reset to HEAD
+        reset_hard(&repo_path)?;
+
+        // Modified file should be back to original state
+        let content = fs::read_to_string(repo_path.join("test.txt"))?;
+        assert_eq!(content, "initial content");
+
+        // Untracked file should still exist
+        assert!(repo_path.join("untracked.txt").exists());
+
+        // Should still have uncommitted changes (untracked file)
+        assert!(has_uncommitted_changes(&repo_path)?);
+
+        // Clean untracked files
+        clean(&repo_path)?;
+
+        // Should have no uncommitted changes after cleaning
+        assert!(!has_uncommitted_changes(&repo_path)?);
+        assert!(!repo_path.join("untracked.txt").exists());
 
         Ok(())
     }

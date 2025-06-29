@@ -320,3 +320,63 @@ fn test_sandbox_protection() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
+    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let godo_dir = TempDir::new()?;
+    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
+
+    // Create uncommitted changes
+    fs::write(repo_path.join("uncommitted.txt"), "uncommitted content")?;
+    Command::new("git")
+        .current_dir(&repo_path)
+        .args(["add", "uncommitted.txt"])
+        .output()?;
+
+    // Run godo with --no-prompt flag (which should use the default behavior of continuing with changes)
+    let output = Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "--no-prompt",
+            "run",
+            "--keep",
+            "test-sandbox",
+            "echo",
+            "test",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!("godo run failed");
+    }
+
+    // Verify sandbox was created
+    let project_dir = godo_dir.path().join("test-project");
+    let sandbox_dir = project_dir.join("test-sandbox");
+    assert!(sandbox_dir.exists(), "Sandbox directory should exist");
+
+    // Verify that uncommitted file exists in the sandbox (with --no-prompt, it continues with changes)
+    assert!(
+        sandbox_dir.join("uncommitted.txt").exists(),
+        "Uncommitted file should exist in sandbox when using --no-prompt"
+    );
+
+    // Clean up
+    Command::new(&godo_binary)
+        .current_dir(&repo_path)
+        .args([
+            "--dir",
+            godo_dir.path().to_str().unwrap(),
+            "remove",
+            "--force",
+            "test-sandbox",
+        ])
+        .output()?;
+
+    Ok(())
+}

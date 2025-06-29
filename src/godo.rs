@@ -268,6 +268,8 @@ impl Godo {
 
         let existing_sandbox = self.get_sandbox(sandbox_name)?;
 
+        let mut use_clean_branch = false;
+
         if let Some(sandbox) = existing_sandbox {
             // Sandbox exists, check if it's live
             if sandbox.is_live() {
@@ -286,9 +288,25 @@ impl Godo {
             if git::has_uncommitted_changes(&self.repo_dir)
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
             {
-                self.output.warn("You have uncommitted changes:")?;
-                if !self.no_prompt && !self.output.confirm("Continue creating worktree?")? {
-                    return Err(GodoError::UserAborted);
+                self.output.warn("You have uncommitted changes.")?;
+
+                if !self.no_prompt {
+                    let options = vec![
+                        "Abort - cancel the operation".to_string(),
+                        "Continue - create worktree with uncommitted changes".to_string(),
+                        "Use clean branch - create worktree without uncommitted changes"
+                            .to_string(),
+                    ];
+
+                    match self.output.select("What would you like to do?", options)? {
+                        0 => return Err(GodoError::UserAborted), // Abort
+                        1 => {} // Continue - do nothing, proceed with normal flow
+                        2 => {
+                            // Use clean branch - we'll reset after creating the worktree
+                            use_clean_branch = true;
+                        }
+                        _ => unreachable!("Invalid selection"),
+                    }
                 }
             }
 
@@ -315,6 +333,18 @@ impl Godo {
             clone_tree(&self.repo_dir, &sandbox_path, &clone_options).map_err(|e| {
                 GodoError::OperationError(format!("Failed to clone files to sandbox: {e}"))
             })?;
+
+            // If user chose to use clean branch, reset the sandbox to remove uncommitted changes
+            if use_clean_branch {
+                self.output.message("Resetting sandbox to clean state...")?;
+                git::reset_hard(&sandbox_path).map_err(|e| {
+                    GodoError::OperationError(format!("Failed to reset sandbox: {e}"))
+                })?;
+                git::clean(&sandbox_path).map_err(|e| {
+                    GodoError::OperationError(format!("Failed to clean sandbox: {e}"))
+                })?;
+                self.output.success("Sandbox is now in a clean state")?;
+            }
         }
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
