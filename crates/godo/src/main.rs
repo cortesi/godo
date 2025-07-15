@@ -1,14 +1,9 @@
-use crate::output::Output;
+use libgodo::{Output, Terminal, Quiet, Godo, GodoError};
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-mod git;
-mod godo;
-mod output;
-use godo::{Godo, GodoError};
 
 const DEFAULT_GODO_DIR: &str = "~/.godo";
 
@@ -131,9 +126,9 @@ fn main() -> Result<()> {
 
     // Create output handler for potential error messages
     let output: Arc<dyn Output> = if cli.quiet {
-        Arc::new(crate::output::Quiet)
+        Arc::new(Quiet)
     } else {
-        Arc::new(crate::output::Terminal::new(color))
+        Arc::new(Terminal::new(color))
     };
 
     // Handle errors with custom formatting

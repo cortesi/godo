@@ -1,0 +1,21 @@
+[package]
+name = "godo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "godo"
+path = "src/main.rs"
+
+[dependencies]
+libgodo = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,20 +1,25 @@
-[package]
-name = "godo"
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 description = "Fast, parallel sandboxes for any Git project"
 license = "MIT"
 repository = "https://github.com/cortesi/godo"
+readme = "README.md"
 keywords = ["git", "worktree", "sandbox", "testing", "isolation"]
 
-[dependencies]
+[workspace]
+members = [
+    "crates/*",
+]
+resolver = "2"
+
+[workspace.dependencies]
 anyhow = "1.0.98"
 clap = { version = "4.5", features = ["derive"] }
 clonetree = "0.0.1"
 crossterm = "0.28"
 termcolor = "1.4.1"
 thiserror = "1.0"
-
-[dev-dependencies]
 tempfile = "3.8"
+libgodo = { version = "0.0.1", path = "crates/libgodo" }

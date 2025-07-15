@@ -1,0 +1,19 @@
+[package]
+name = "libgodo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clonetree = { workspace = true }
+crossterm = { workspace = true }
+termcolor = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
