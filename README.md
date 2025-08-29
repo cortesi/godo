@@ -55,6 +55,8 @@ $ godo run format cargo fmt
 * Automatic cleanup; keep a sandbox with `--keep` or auto-commit with
   `--commit "msg"`.
 * Exit codes from commands are preserved, making `godo` scriptable.
+* Direct exec preserves quoting and args; use `--sh` for shell features
+  like pipes, globs, and redirection.
 
 ---
 
@@ -106,10 +108,13 @@ Options:
    additional space.
 
 4. **Run the command or shell**  
-   Invokes `$SHELL -c "<COMMAND>"` (or drops into an interactive shell if no
-   command is provided) inside the sandbox, so all writes and changes remain
-   isolated. The exit code from the command is preserved and passed back to the
-   caller, allowing `godo` to be used in scripts and CI pipelines.
+   By default, execs the program directly with its arguments (no extra shell),
+   preserving argument boundaries and quoting: `prog arg1 "a b"` becomes
+   `Command::new("prog").args(["arg1", "a b"])`. Pass `--sh` to force shell
+   evaluation via `$SHELL -c "<COMMAND>"` (useful for pipes, globs, etc.). If no
+   command is provided, an interactive shell is opened in the sandbox. The exit
+   code from the command is preserved and passed back to the caller, allowing
+   `godo` to be used in scripts and CI pipelines.
 
 5. **Commit or keep results**  
    Unless `--keep` is specified, godo prompts to:

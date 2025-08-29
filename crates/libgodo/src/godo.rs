@@ -289,11 +289,12 @@ impl Godo {
     /// - `commit`: optional commit message to commit all changes automatically
     /// - `excludes`: glob patterns to exclude when cloning the tree into the sandbox
     /// - `sandbox_name`: the logical name of the sandbox (used for branch/worktree)
-    /// - `command`: shell command to execute; an empty slice starts an interactive shell
+    /// - `command`: command to execute; an empty slice starts an interactive shell
     pub fn run(
         &self,
         keep: bool,
         commit: Option<String>,
+        force_shell: bool,
         excludes: &[String],
         sandbox_name: &str,
         command: &[String],
@@ -392,14 +393,37 @@ impl Godo {
                 .status()
                 .map_err(|e| GodoError::OperationError(format!("Failed to start shell: {e}")))?
         } else {
-            // Run the specified command
-            let command_string = command.join(" ");
-            Command::new(&shell)
-                .arg("-c")
-                .arg(&command_string)
-                .current_dir(&sandbox_path)
-                .status()
-                .map_err(|e| GodoError::OperationError(format!("Failed to run command: {e}")))?
+            if force_shell {
+                // Force shell evaluation (e.g., pipes, globs). Users should quote the entire command
+                // in their outer shell, e.g.: --sh 'echo "a b" | wc -w'
+                let command_string = command.join(" ");
+                Command::new(&shell)
+                    .arg("-c")
+                    .arg(&command_string)
+                    .current_dir(&sandbox_path)
+                    .status()
+                    .map_err(|e| GodoError::OperationError(format!("Failed to run command: {e}")))?
+            } else {
+                // Exec program directly to preserve argument boundaries and quoting
+                let program = &command[0];
+                let args = &command[1..];
+                match Command::new(program)
+                    .args(args)
+                    .current_dir(&sandbox_path)
+                    .status()
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // Map command-not-found to standard 127 like shells do
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            return Err(GodoError::CommandExit { code: 127 });
+                        }
+                        return Err(GodoError::OperationError(format!(
+                            "Failed to run command: {e}"
+                        )));
+                    }
+                }
+            }
         };
 
         if !status.success() {
@@ -433,80 +457,80 @@ impl Godo {
                 loop {
                     let action = self.prompt_for_action(&sandbox_path)?;
                     match action {
-                    PostRunAction::Commit => {
-                        self.output.message("Staging and committing changes...")?;
-                        // Stage all changes
-                        git::add_all(&sandbox_path).map_err(|e| {
-                            GodoError::OperationError(format!("Git operation failed: {e}"))
-                        })?;
-                        // Commit with verbose flag
-                        git::commit_interactive(&sandbox_path).map_err(|e| {
-                            GodoError::OperationError(format!("Git operation failed: {e}"))
-                        })?;
-                        // Clean up after commit
-                        self.cleanup_sandbox(sandbox_name)?;
-                        break; // Exit the loop after commit
-                    }
-                    PostRunAction::Shell => {
-                        self.output.message("Opening shell in sandbox...")?;
-                        // Run interactive shell
-                        let shell_status = Command::new(&shell)
-                            .current_dir(&sandbox_path)
-                            .status()
-                            .map_err(|e| {
-                                GodoError::OperationError(format!("Failed to start shell: {e}"))
+                        PostRunAction::Commit => {
+                            self.output.message("Staging and committing changes...")?;
+                            // Stage all changes
+                            git::add_all(&sandbox_path).map_err(|e| {
+                                GodoError::OperationError(format!("Git operation failed: {e}"))
                             })?;
+                            // Commit with verbose flag
+                            git::commit_interactive(&sandbox_path).map_err(|e| {
+                                GodoError::OperationError(format!("Git operation failed: {e}"))
+                            })?;
+                            // Clean up after commit
+                            self.cleanup_sandbox(sandbox_name)?;
+                            break; // Exit the loop after commit
+                        }
+                        PostRunAction::Shell => {
+                            self.output.message("Opening shell in sandbox...")?;
+                            // Run interactive shell
+                            let shell_status = Command::new(&shell)
+                                .current_dir(&sandbox_path)
+                                .status()
+                                .map_err(|e| {
+                                    GodoError::OperationError(format!("Failed to start shell: {e}"))
+                                })?;
 
-                        if !shell_status.success() {
-                            self.output.warn("Shell exited with non-zero status")?;
+                            if !shell_status.success() {
+                                self.output.warn("Shell exited with non-zero status")?;
+                            }
+                            // Continue the loop to show prompt again
                         }
-                        // Continue the loop to show prompt again
-                    }
-                    PostRunAction::Keep => {
-                        self.output.success(&format!(
-                            "Keeping sandbox. You can return to it at: {}",
-                            sandbox_path.display()
-                        ))?;
-                        break; // Exit the loop after keep
-                    }
-                    PostRunAction::Discard => {
-                        // Confirm discard action
-                        if !self.no_prompt
-                            && !self
-                                .output
-                                .confirm("Really discard all changes and delete the branch?")?
-                        {
-                            // User cancelled, continue the loop to show prompt again
-                            continue;
+                        PostRunAction::Keep => {
+                            self.output.success(&format!(
+                                "Keeping sandbox. You can return to it at: {}",
+                                sandbox_path.display()
+                            ))?;
+                            break; // Exit the loop after keep
                         }
-                        self.output
-                            .message("Discarding all changes and removing sandbox...")?;
-                        self.remove_sandbox(sandbox_name)?;
-                        self.output.success("Sandbox and branch removed")?;
-                        break; // Exit the loop after discard
-                    }
-                    PostRunAction::Branch => {
-                        self.output
-                            .message("Keeping branch but removing worktree...")?;
-                        // Remove only the worktree, keeping the branch
-                        git::remove_worktree(&self.repo_dir, &sandbox_path, true).map_err(|e| {
-                            GodoError::OperationError(format!("Git operation failed: {e}"))
-                        })?;
-                        if sandbox_path.exists() {
-                            fs::remove_dir_all(&sandbox_path).map_err(|e| {
-                                GodoError::OperationError(format!(
-                                    "Failed to remove sandbox directory: {e}"
-                                ))
-                            })?;
+                        PostRunAction::Discard => {
+                            // Confirm discard action
+                            if !self.no_prompt
+                                && !self
+                                    .output
+                                    .confirm("Really discard all changes and delete the branch?")?
+                            {
+                                // User cancelled, continue the loop to show prompt again
+                                continue;
+                            }
+                            self.output
+                                .message("Discarding all changes and removing sandbox...")?;
+                            self.remove_sandbox(sandbox_name)?;
+                            self.output.success("Sandbox and branch removed")?;
+                            break; // Exit the loop after discard
                         }
-                        let branch = branch_name(sandbox_name);
-                        self.output
-                            .success(&format!("Worktree removed, branch {branch} kept"))?;
-                        break; // Exit the loop after branch
+                        PostRunAction::Branch => {
+                            self.output
+                                .message("Keeping branch but removing worktree...")?;
+                            // Remove only the worktree, keeping the branch
+                            git::remove_worktree(&self.repo_dir, &sandbox_path, true).map_err(
+                                |e| GodoError::OperationError(format!("Git operation failed: {e}")),
+                            )?;
+                            if sandbox_path.exists() {
+                                fs::remove_dir_all(&sandbox_path).map_err(|e| {
+                                    GodoError::OperationError(format!(
+                                        "Failed to remove sandbox directory: {e}"
+                                    ))
+                                })?;
+                            }
+                            let branch = branch_name(sandbox_name);
+                            self.output
+                                .success(&format!("Worktree removed, branch {branch} kept"))?;
+                            break; // Exit the loop after branch
+                        }
                     }
                 }
             }
-        }
         }
 
         Ok(())

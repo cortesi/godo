@@ -1,6 +1,6 @@
-use libgodo::{Output, Terminal, Quiet, Godo, GodoError};
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
+use libgodo::{Godo, GodoError, Output, Quiet, Terminal};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,6 +53,10 @@ enum Commands {
         /// Automatically commit all changes with the specified message after command exits
         #[arg(long)]
         commit: Option<String>,
+
+        /// Force shell evaluation with $SHELL -c
+        #[arg(long = "sh")]
+        sh: bool,
 
         /// Exclude directories that match glob (can be specified multiple times)
         #[arg(long = "exclude", value_name = "GLOB")]
@@ -180,11 +184,12 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
         Commands::Run {
             keep,
             commit,
+            sh,
             excludes,
             name,
             command,
         } => {
-            godo.run(keep, commit, &excludes, &name, &command)?;
+            godo.run(keep, commit, sh, &excludes, &name, &command)?;
         }
         Commands::List => {
             godo.list()?;

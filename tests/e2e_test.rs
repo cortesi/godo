@@ -257,6 +257,41 @@ exit 5
 }
 
 #[test]
+fn test_argument_quoting_preserved() -> Result<()> {
+    let env = TestEnv::new()?;
+
+    // Create a script that verifies its first two args
+    let script_content = r#"#!/bin/sh
+if [ "$1" = "a b" ] && [ "$2" = "c" ]; then
+  exit 0
+else
+  exit 1
+fi
+"#;
+    let script_path = env.repo_dir.join("args_test.sh");
+    fs::write(&script_path, script_content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+
+    let output = env.run_in_sandbox("test-args", &["./args_test.sh", "a b", "c"])?;
+
+    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(0));
+
+    // Cleanup
+    let _ = env.remove_sandbox("test-args");
+    fs::remove_file(&script_path)?;
+
+    Ok(())
+}
+
+#[test]
 fn test_exit_code_signal_termination() -> Result<()> {
     let env = TestEnv::new()?;
 
