@@ -182,29 +182,36 @@ impl Terminal {
     fn print_option_with_shortcut(&self, option: &str, shortcut: char) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
 
-        // Find the position of the shortcut in the option
-        let shortcut_pos = option
-            .chars()
-            .position(|ch| ch.to_lowercase().next() == Some(shortcut))
-            .unwrap_or(usize::MAX);
+        // Find the first matching character using Unicode-aware iteration.
+        // Compare case-insensitively by taking the first codepoint of to_lowercase(),
+        // mirroring how shortcuts are generated.
+        let mut match_byte_idx: Option<usize> = None;
+        let mut match_char: Option<char> = None;
+        for (byte_idx, ch) in option.char_indices() {
+            let lower = ch.to_lowercase().next().unwrap_or(ch);
+            if lower == shortcut {
+                match_byte_idx = Some(byte_idx);
+                match_char = Some(ch);
+                break;
+            }
+        }
 
-        if shortcut_pos < option.len() {
-            // Print the part before the shortcut
-            if shortcut_pos > 0 {
-                write!(stdout, "{}", &option[..shortcut_pos])?;
+        if let (Some(idx), Some(ch)) = (match_byte_idx, match_char) {
+            // Print prefix safely up to the matched character's byte index
+            if idx > 0 {
+                write!(stdout, "{}", &option[..idx])?;
             }
 
-            // Print the shortcut in cyan
+            // Highlight the matched character
             stdout.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
-            write!(stdout, "{}", option.chars().nth(shortcut_pos).unwrap())?;
+            write!(stdout, "{}", ch)?;
             stdout.reset()?;
 
-            // Print the rest
-            write!(
-                stdout,
-                "{}",
-                &option[shortcut_pos + option.chars().nth(shortcut_pos).unwrap().len_utf8()..]
-            )?;
+            // Print the suffix starting after the matched character
+            let next = idx + ch.len_utf8();
+            if next <= option.len() {
+                write!(stdout, "{}", &option[next..])?;
+            }
         } else {
             // Shortcut not in option text, print shortcut in brackets
             write!(stdout, "[{shortcut}] {option}")?;
