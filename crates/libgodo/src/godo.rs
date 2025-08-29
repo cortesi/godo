@@ -422,10 +422,17 @@ impl Godo {
             // Clean up after commit
             self.cleanup_sandbox(sandbox_name)?;
         } else if !keep {
-            // Prompt user for action if not explicitly keeping or committing
-            loop {
-                let action = self.prompt_for_action(&sandbox_path)?;
-                match action {
+            // If --no-prompt, choose a safe default: keep the sandbox.
+            if self.no_prompt {
+                self.output.success(&format!(
+                    "Keeping sandbox. You can return to it at: {}",
+                    sandbox_path.display()
+                ))?;
+            } else {
+                // Prompt user for action if not explicitly keeping or committing
+                loop {
+                    let action = self.prompt_for_action(&sandbox_path)?;
+                    match action {
                     PostRunAction::Commit => {
                         self.output.message("Staging and committing changes...")?;
                         // Stage all changes
@@ -499,6 +506,7 @@ impl Godo {
                     }
                 }
             }
+        }
         }
 
         Ok(())
@@ -641,19 +649,33 @@ impl Godo {
         };
 
         if !force {
-            if status.has_uncommitted_changes
-                && !self
+            if status.has_uncommitted_changes {
+                if self.no_prompt {
+                    return Err(GodoError::SandboxError {
+                        name: name.to_string(),
+                        message: "has uncommitted changes (use --force to remove)".to_string(),
+                    });
+                }
+                if !self
                     .output
                     .confirm("Sandbox has uncommitted changes. Remove anyway?")?
-            {
-                return Err(GodoError::UserAborted);
+                {
+                    return Err(GodoError::UserAborted);
+                }
             }
-            if status.has_unmerged_commits
-                && !self
+            if status.has_unmerged_commits {
+                if self.no_prompt {
+                    return Err(GodoError::SandboxError {
+                        name: name.to_string(),
+                        message: "branch has unmerged commits (use --force to remove)".to_string(),
+                    });
+                }
+                if !self
                     .output
                     .confirm("Branch has unmerged commits. Remove anyway?")?
-            {
-                return Err(GodoError::UserAborted);
+                {
+                    return Err(GodoError::UserAborted);
+                }
             }
         }
 
