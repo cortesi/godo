@@ -9,39 +9,58 @@ use thiserror::Error;
 
 const INDENT: usize = 4;
 
+/// Errors produced by [`Output`] implementations when interacting with the user
+/// or the terminal.
 #[derive(Debug, Error)]
 pub enum OutputError {
+    /// The requested operation is not supported by this output backend.
     #[error("{0}")]
     Unsupported(&'static str),
 
+    /// The caller supplied invalid input (e.g. empty options for a selector).
     #[error("{0}")]
     InvalidInput(&'static str),
 
+    /// A terminal/TTY related failure occurred.
     #[error("Terminal error: {0}")]
     Terminal(String),
 
+    /// Underlying I/O error while writing/reading to the terminal.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
+    /// The user cancelled an interactive prompt.
     #[error("Selection cancelled")]
     Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, OutputError>;
 
-/// Trait for handling output in different contexts (terminal, no output, etc.)
-/// Future implementations could include file output, JSON output, etc.
+/// Abstraction over how user-facing messages and prompts are produced.
+///
+/// Implementations can render to a terminal, suppress output, or emit to other
+/// formats (e.g. files or JSON) in the future.
 pub trait Output: Send + Sync {
+    /// Print an informational message.
     fn message(&self, msg: &str) -> Result<()>;
+    /// Print a success message.
     fn success(&self, msg: &str) -> Result<()>;
+    /// Print a warning message.
     fn warn(&self, msg: &str) -> Result<()>;
+    /// Print an error/failure message.
     fn fail(&self, msg: &str) -> Result<()>;
+    /// Ask the user to confirm an action; returns `true` if confirmed.
     fn confirm(&self, prompt: &str) -> Result<bool>;
+    /// Present a list of `options` and return the chosen index.
     fn select(&self, prompt: &str, options: Vec<String>) -> Result<usize>;
+    /// Flush any buffered output.
     fn finish(&self) -> Result<()>;
+    /// Create a nested output section that indents subsequent messages.
     fn section(&self, header: &str) -> Box<dyn Output>;
 }
 
+/// Output implementation that suppresses all messages and rejects interactive
+/// prompts. Useful for non-interactive or test environments.
 pub struct Quiet;
 
 impl Output for Quiet {
@@ -82,12 +101,17 @@ impl Output for Quiet {
     }
 }
 
+/// Color-capable terminal renderer for user messages and prompts.
 pub struct Terminal {
     color_choice: ColorChoice,
     indent: usize,
 }
 
 impl Terminal {
+    /// Create a new terminal output.
+    ///
+    /// - `color`: when `true`, always render colored output; when `false`,
+    ///   disable ANSI colors.
     pub fn new(color: bool) -> Self {
         let color_choice = if color {
             ColorChoice::Always

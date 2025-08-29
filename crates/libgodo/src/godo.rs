@@ -14,24 +14,31 @@ pub type Result<T> = std::result::Result<T, GodoError>;
 /// Godo-specific error types
 #[derive(Error, Debug)]
 pub enum GodoError {
+    /// A command executed inside the sandbox exited with a non-zero status.
     #[error("Command exited with status code: {code}")]
     CommandExit { code: i32 },
 
+    /// The requested sandbox operation failed due to an invalid state.
     #[error("Sandbox error: {message}")]
     SandboxError { name: String, message: String },
 
+    /// The operation was cancelled by the user.
     #[error("Aborted by user")]
     UserAborted,
 
+    /// A contextual precondition failed (e.g. not inside a Git repo).
     #[error("Context error: {0}")]
     ContextError(String),
 
+    /// A high-level operation failed.
     #[error("Operation failed: {0}")]
     OperationError(String),
 
+    /// The selected output backend reported an error.
     #[error("Output operation failed: {0}")]
     OutputError(#[from] crate::output::OutputError),
 
+    /// An underlying I/O operation failed.
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
@@ -174,6 +181,13 @@ fn branch_name(sandbox_name: &str) -> String {
     format!("godo/{sandbox_name}")
 }
 
+/// Manager for creating and operating on ephemeral Git sandboxes based on
+/// worktrees.
+///
+/// A sandbox is a dedicated worktree rooted under a project-specific
+/// directory inside the "godo directory". `Godo` provides high-level
+/// operations to create a sandbox, run commands inside it, and to list,
+/// remove, or clean existing sandboxes.
 pub struct Godo {
     godo_dir: PathBuf,
     repo_dir: PathBuf,
@@ -182,6 +196,14 @@ pub struct Godo {
 }
 
 impl Godo {
+    /// Create a new [`Godo`] manager.
+    ///
+    /// - `godo_dir`: directory where project sandboxes are stored
+    /// - `repo_dir`: optional path to the git repository root. If `None`, the
+    ///   repository root is discovered by walking up from the current directory.
+    /// - `output`: output implementation used for user-facing messages
+    /// - `no_prompt`: when `true`, avoid interactive prompts and assume
+    ///   conservative defaults
     pub fn new(
         godo_dir: PathBuf,
         repo_dir: Option<PathBuf>,
@@ -253,6 +275,13 @@ impl Godo {
         }
     }
 
+    /// Create or reuse a sandbox and run a command or interactive shell in it.
+    ///
+    /// - `keep`: keep the sandbox after the command completes when `true`
+    /// - `commit`: optional commit message to commit all changes automatically
+    /// - `excludes`: glob patterns to exclude when cloning the tree into the sandbox
+    /// - `sandbox_name`: the logical name of the sandbox (used for branch/worktree)
+    /// - `command`: shell command to execute; an empty slice starts an interactive shell
     pub fn run(
         &self,
         keep: bool,
@@ -563,6 +592,7 @@ impl Godo {
         Ok(sorted_names)
     }
 
+    /// List all known sandboxes for the current project with their status.
     pub fn list(&self) -> Result<()> {
         let sorted_names = self.all_sandbox_names()?;
 
@@ -587,6 +617,10 @@ impl Godo {
         Ok(())
     }
 
+    /// Remove a sandbox's worktree and branch.
+    ///
+    /// If `force` is `false`, the user is prompted when uncommitted changes or
+    /// unmerged commits are detected.
     pub fn remove(&self, name: &str, force: bool) -> Result<()> {
         let status = match self.get_sandbox(name)? {
             Some(s) => s,
@@ -619,6 +653,8 @@ impl Godo {
         self.remove_sandbox(name)
     }
 
+    /// Clean one sandbox or all sandboxes by removing stale worktrees/branches
+    /// when safe to do so.
     pub fn clean(&self, name: Option<&str>) -> Result<()> {
         match name {
             Some(name) => {
