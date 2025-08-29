@@ -16,11 +16,19 @@ pub type Result<T> = std::result::Result<T, GodoError>;
 pub enum GodoError {
     /// A command executed inside the sandbox exited with a non-zero status.
     #[error("Command exited with status code: {code}")]
-    CommandExit { code: i32 },
+    CommandExit {
+        /// The process exit status code.
+        code: i32,
+    },
 
     /// The requested sandbox operation failed due to an invalid state.
     #[error("Sandbox error: {message}")]
-    SandboxError { name: String, message: String },
+    SandboxError {
+        /// Name of the sandbox associated with the failure.
+        name: String,
+        /// Human-readable error description.
+        message: String,
+    },
 
     /// The operation was cancelled by the user.
     #[error("Aborted by user")]

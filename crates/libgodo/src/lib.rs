@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+#![deny(rustdoc::missing_crate_level_docs)]
 //! Core library for managing ephemeral Git worktrees ("sandboxes") used by godo.
 //!
 //! This crate exposes a small API surface that lets callers create and
