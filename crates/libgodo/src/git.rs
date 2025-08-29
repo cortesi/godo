@@ -70,6 +70,16 @@ pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str
 }
 
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+    // First, check if the worktree path is currently registered by Git
+    let exists = list_worktrees(repo_path)?
+        .into_iter()
+        .any(|wt| paths_match(&wt.path, worktree_path));
+
+    if !exists {
+        // Treat non-existent worktree as success, since the desired end state is achieved
+        return Ok(());
+    }
+
     let worktree_path_str = worktree_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
@@ -80,17 +90,36 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> R
     }
     args.push(worktree_path_str);
 
-    match run_git(repo_path, &args) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            // Check if the error is because the worktree doesn't exist
-            let error_msg = e.to_string();
-            if error_msg.contains("is not a working tree") {
-                // Worktree already removed, not an error
-                Ok(())
+    run_git(repo_path, &args)?;
+    Ok(())
+}
+
+/// Best-effort path comparison that tolerates absolute vs relative inputs.
+fn paths_match(a: &Path, b: &Path) -> bool {
+    // Fast path equality
+    if a == b {
+        return true;
+    }
+
+    // Try canonicalizing both; if that fails (e.g., missing path), fall back to
+    // string comparison of absolute forms.
+    let can_a = a.canonicalize().ok();
+    let can_b = b.canonicalize().ok();
+    match (can_a, can_b) {
+        (Some(x), Some(y)) => x == y,
+        _ => {
+            // Join b onto its parent if relative
+            let abs_a = if a.is_absolute() {
+                a.to_path_buf()
             } else {
-                Err(e)
-            }
+                std::env::current_dir().unwrap_or_default().join(a)
+            };
+            let abs_b = if b.is_absolute() {
+                b.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(b)
+            };
+            abs_a == abs_b
         }
     }
 }
