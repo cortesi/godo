@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal,
 };
 use std::collections::HashSet;
@@ -274,12 +274,19 @@ impl Output for Terminal {
         // Ensure we restore terminal on exit
         let result = (|| -> Result<(usize, Option<char>)> {
             loop {
-                if let Event::Key(KeyEvent { code, .. }) =
+                if let Event::Key(KeyEvent { code, modifiers, .. }) =
                     event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
                 {
                     match code {
                         KeyCode::Char(ch) => {
                             let ch_lower = ch.to_lowercase().next().unwrap();
+
+                            // Common termination keys in raw mode: Ctrl-C and Ctrl-D
+                            if modifiers.contains(KeyModifiers::CONTROL)
+                                && (ch_lower == 'c' || ch_lower == 'd')
+                            {
+                                return Err(OutputError::Cancelled);
+                            }
 
                             // Check if input matches any shortcut
                             if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {

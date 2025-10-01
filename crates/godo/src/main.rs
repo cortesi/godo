@@ -137,9 +137,11 @@ fn main() -> Result<()> {
 
     // Handle errors with custom formatting
     if let Err(e) = run(cli, output.clone()) {
-        // Reset any existing colors
-        print!("\x1b[0m");
-        let _ = std::io::stdout().flush();
+        // Reset any existing colors only if color was enabled and stdout is a TTY
+        if color && std::io::stdout().is_terminal() {
+            print!("\x1b[0m");
+            let _ = std::io::stdout().flush();
+        }
 
         // Check if this is a GodoError::CommandExit to get the specific exit code
         let exit_code = if let Some(GodoError::CommandExit { code }) = e.downcast_ref::<GodoError>()
