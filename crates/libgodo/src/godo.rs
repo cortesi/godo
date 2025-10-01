@@ -1,16 +1,19 @@
+use std::{
+    collections::HashSet,
+    env, fs, io,
+    path::{Component, Path, PathBuf},
+    process::Command,
+    result::Result as StdResult,
+    sync::Arc,
+};
+
 use clonetree::{Options, clone_tree};
-use std::collections::HashSet;
-use std::env;
-use std::fs;
-use std::io;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::result::Result as StdResult;
-use std::sync::Arc;
 use thiserror::Error;
 
-use crate::git;
-use crate::output::{Output, OutputError as OutputErr};
+use crate::{
+    git,
+    output::{Output, OutputError as OutputErr},
+};
 
 /// Custom Result type for Godo operations.
 pub type Result<T> = StdResult<T, GodoError>;
@@ -267,6 +270,24 @@ impl Godo {
         Ok(self.project_dir()?.join(sandbox_name))
     }
 
+    /// Wrapper around `Output::select` that maps cancellation to `UserAborted`.
+    fn prompt_select(&self, prompt: &str, options: Vec<String>) -> Result<usize> {
+        self.output
+            .select(prompt, options)
+            .map_err(|err| match err {
+                OutputErr::Cancelled => GodoError::UserAborted,
+                other => GodoError::OutputError(other),
+            })
+    }
+
+    /// Wrapper around `Output::confirm` that maps cancellation to `UserAborted`.
+    fn prompt_confirm(&self, prompt: &str) -> Result<bool> {
+        self.output.confirm(prompt).map_err(|err| match err {
+            OutputErr::Cancelled => GodoError::UserAborted,
+            other => GodoError::OutputError(other),
+        })
+    }
+
     /// Prompt the user for what to do after command execution
     fn prompt_for_action(&self, sandbox_path: &Path) -> Result<PostRunAction> {
         // Check if there are uncommitted changes
@@ -287,7 +308,7 @@ impl Godo {
             "branch - keep the branch but discard the worktree".to_string(),
         ];
 
-        match self.output.select(prompt, options)? {
+        match self.prompt_select(prompt, options)? {
             0 => Ok(PostRunAction::Commit),
             1 => Ok(PostRunAction::Shell),
             2 => Ok(PostRunAction::Keep),
@@ -350,7 +371,7 @@ impl Godo {
                             .to_string(),
                     ];
 
-                    match self.output.select("What would you like to do?", options)? {
+                    match self.prompt_select("What would you like to do?", options)? {
                         0 => return Err(GodoError::UserAborted), // Abort
                         1 => {} // Continue - do nothing, proceed with normal flow
                         2 => {
@@ -508,9 +529,9 @@ impl Godo {
                         PostRunAction::Discard => {
                             // Confirm discard action
                             if !self.no_prompt
-                                && !self
-                                    .output
-                                    .confirm("Really discard all changes and delete the branch?")?
+                                && !self.prompt_confirm(
+                                    "Really discard all changes and delete the branch?",
+                                )?
                             {
                                 // User cancelled, continue the loop to show prompt again
                                 continue;
@@ -693,10 +714,7 @@ impl Godo {
                         message: "has uncommitted changes (use --force to remove)".to_string(),
                     });
                 }
-                if !self
-                    .output
-                    .confirm("Sandbox has uncommitted changes. Remove anyway?")?
-                {
+                if !self.prompt_confirm("Sandbox has uncommitted changes. Remove anyway?")? {
                     return Err(GodoError::UserAborted);
                 }
             }
@@ -707,10 +725,7 @@ impl Godo {
                         message: "branch has unmerged commits (use --force to remove)".to_string(),
                     });
                 }
-                if !self
-                    .output
-                    .confirm("Branch has unmerged commits. Remove anyway?")?
-                {
+                if !self.prompt_confirm("Branch has unmerged commits. Remove anyway?")? {
                     return Err(GodoError::UserAborted);
                 }
             }
@@ -740,9 +755,7 @@ impl Godo {
                 if status.has_worktree
                     && status.has_uncommitted_changes
                     && !self.no_prompt
-                    && !self
-                        .output
-                        .confirm("Sandbox has uncommitted changes. Clean anyway?")?
+                    && !self.prompt_confirm("Sandbox has uncommitted changes. Clean anyway?")?
                 {
                     return Err(GodoError::UserAborted);
                 }
@@ -882,9 +895,10 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::output::{Output, Quiet, Result as OutputResult};
-    use std::path::PathBuf;
 
     #[test]
     fn test_clean_name() {

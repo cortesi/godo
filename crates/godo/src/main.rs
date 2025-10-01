@@ -2,14 +2,17 @@
 #![deny(rustdoc::missing_crate_level_docs)]
 //! Command-line interface for managing godo sandboxes via the libgodo crate.
 
+use std::{
+    env,
+    io::{self, IsTerminal, Write},
+    path::{Path, PathBuf},
+    process,
+    sync::Arc,
+};
+
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use libgodo::{Godo, GodoError, Output, Quiet, Terminal};
-use std::env;
-use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
-use std::process;
-use std::sync::Arc;
 
 /// Default directory for storing godo-managed sandboxes.
 const DEFAULT_GODO_DIR: &str = "~/.godo";
@@ -156,20 +159,24 @@ fn main() -> Result<()> {
             }
         }
 
-        // Check if this is a GodoError::CommandExit to get the specific exit code
-        let exit_code = if let Some(GodoError::CommandExit { code }) = e.downcast_ref::<GodoError>()
-        {
-            // Don't display error message for command exit errors
-            *code
-        } else {
-            // Use the output handler to display the error
-            if let Err(display_err) = output.fail(&format!("{e:#}")) {
-                eprintln!("Failed to report error via output handler: {display_err:#}");
+        let exit_code = match e.downcast_ref::<GodoError>() {
+            Some(GodoError::CommandExit { code }) => *code,
+            Some(GodoError::UserAborted) => {
+                if let Err(finish_err) = output.finish() {
+                    eprintln!("Failed to flush output handler: {finish_err:#}");
+                }
+                130
             }
-            if let Err(finish_err) = output.finish() {
-                eprintln!("Failed to flush output handler: {finish_err:#}");
+            _ => {
+                // Use the output handler to display the error
+                if let Err(display_err) = output.fail(&format!("{e:#}")) {
+                    eprintln!("Failed to report error via output handler: {display_err:#}");
+                }
+                if let Err(finish_err) = output.finish() {
+                    eprintln!("Failed to flush output handler: {finish_err:#}");
+                }
+                1
             }
-            1
         };
 
         process::exit(exit_code);

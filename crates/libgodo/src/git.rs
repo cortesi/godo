@@ -1,7 +1,10 @@
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+};
+
 use anyhow::{Context, Result};
-use std::env;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
 
 /// Run a git command with the given arguments in the specified directory.
 /// Returns the output if successful, otherwise returns an error with the full command details.
@@ -273,9 +276,11 @@ pub fn clean(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     fn setup_test_repo() -> Result<(TempDir, PathBuf)> {
         let temp_dir = TempDir::new()?;

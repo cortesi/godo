@@ -1,16 +1,42 @@
+use std::{
+    char,
+    collections::HashSet,
+    io::{self, Write},
+    result::Result as StdResult,
+};
+
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal,
 };
-use std::char;
-use std::collections::HashSet;
-use std::io::{self, Write};
-use std::result::Result as StdResult;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
 /// Indentation level (in spaces) used for nested output sections.
 const INDENT: usize = 4;
+
+/// ASCII control representation of `Ctrl+C`.
+const CTRL_C: char = '\u{3}';
+/// ASCII control representation of `Ctrl+D`.
+const CTRL_D: char = '\u{4}';
+
+/// Determine whether the combination of `code` and `modifiers` represents an
+/// interactive cancellation such as `Ctrl+C`, `Ctrl+D`, or `Esc`.
+fn is_cancel_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    match code {
+        KeyCode::Char(ch) => {
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(ch.to_lowercase().next().unwrap_or(ch), 'c' | 'd')
+            {
+                return true;
+            }
+
+            matches!(ch, CTRL_C | CTRL_D)
+        }
+        KeyCode::Esc => true,
+        _ => false,
+    }
+}
 
 /// Errors produced by [`Output`] implementations when interacting with the user
 /// or the terminal.
@@ -284,30 +310,28 @@ impl Output for Terminal {
         let result = (|| -> Result<(usize, Option<char>)> {
             loop {
                 if let Event::Key(KeyEvent {
-                    code, modifiers, ..
+                    code,
+                    modifiers,
+                    kind,
+                    ..
                 }) = event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
                 {
-                    match code {
-                        KeyCode::Char(ch) => {
-                            let ch_lower = ch.to_lowercase().next().unwrap();
+                    if kind != KeyEventKind::Press {
+                        continue;
+                    }
 
-                            // Common termination keys in raw mode: Ctrl-C and Ctrl-D
-                            if modifiers.contains(KeyModifiers::CONTROL)
-                                && (ch_lower == 'c' || ch_lower == 'd')
-                            {
-                                return Err(OutputError::Cancelled);
-                            }
+                    if is_cancel_key(code, modifiers) {
+                        return Err(OutputError::Cancelled);
+                    }
 
-                            // Check if input matches any shortcut
-                            if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {
-                                // Return the index and character to print after restoring terminal
-                                return Ok((index, Some(ch_lower)));
-                            }
+                    if let KeyCode::Char(ch) = code {
+                        let ch_lower = ch.to_lowercase().next().unwrap();
+
+                        // Check if input matches any shortcut
+                        if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {
+                            // Return the index and character to print after restoring terminal
+                            return Ok((index, Some(ch_lower)));
                         }
-                        KeyCode::Esc => {
-                            return Err(OutputError::Cancelled);
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -425,6 +449,18 @@ mod tests {
             assert!(matches!(e, OutputError::InvalidInput(_)));
             assert_eq!(e.to_string(), "No options provided for selection");
         }
+    }
+
+    #[test]
+    fn test_is_cancel_key_variants() {
+        assert!(is_cancel_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(is_cancel_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(is_cancel_key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(is_cancel_key(KeyCode::Char(CTRL_C), KeyModifiers::NONE));
+        assert!(is_cancel_key(KeyCode::Char(CTRL_D), KeyModifiers::NONE));
+
+        assert!(!is_cancel_key(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(!is_cancel_key(KeyCode::Char('x'), KeyModifiers::CONTROL));
     }
 
     #[test]
