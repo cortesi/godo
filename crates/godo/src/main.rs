@@ -1,10 +1,17 @@
+#![deny(missing_docs)]
+#![deny(rustdoc::missing_crate_level_docs)]
+//! Command-line interface for managing godo sandboxes via the libgodo crate.
+
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use libgodo::{Godo, GodoError, Output, Quiet, Terminal};
-use std::io::{IsTerminal, Write};
+use std::env;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::Arc;
 
+/// Default directory for storing godo-managed sandboxes.
 const DEFAULT_GODO_DIR: &str = "~/.godo";
 
 #[derive(Parser)]
@@ -13,6 +20,7 @@ const DEFAULT_GODO_DIR: &str = "~/.godo";
     ArgGroup::new("color_mode")
         .args(["color", "no_color"])
 ))]
+/// Top-level CLI options for godo.
 struct Cli {
     /// Override the godo directory location
     #[arg(long, global = true, value_name = "DIR")]
@@ -39,10 +47,12 @@ struct Cli {
     no_prompt: bool,
 
     #[command(subcommand)]
+    /// The primary command to execute.
     command: Commands,
 }
 
 #[derive(Subcommand)]
+/// CLI subcommands supported by godo.
 enum Commands {
     /// Run a command in an isolated workspace
     Run {
@@ -91,18 +101,19 @@ enum Commands {
     },
 }
 
+/// Expand a leading `~` in a filesystem path using the `HOME` environment variable.
 fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(path.replacen("~", &home, 1));
-        }
+    if path.starts_with("~")
+        && let Ok(home) = env::var("HOME")
+    {
+        return PathBuf::from(path.replacen("~", &home, 1));
     }
     PathBuf::from(path)
 }
 
-/// Check if the current working directory is inside a godo sandbox
+/// Check if the current working directory is inside a godo sandbox.
 fn is_inside_godo_sandbox(godo_dir: &Path) -> Result<bool> {
-    let current_dir = std::env::current_dir()?;
+    let current_dir = env::current_dir()?;
     let canonical_godo_dir = godo_dir
         .canonicalize()
         .unwrap_or_else(|_| godo_dir.to_path_buf());
@@ -125,7 +136,7 @@ fn main() -> Result<()> {
         false
     } else {
         // Auto-detect based on terminal
-        std::io::stdout().is_terminal()
+        io::stdout().is_terminal()
     };
 
     // Create output handler for potential error messages
@@ -136,11 +147,13 @@ fn main() -> Result<()> {
     };
 
     // Handle errors with custom formatting
-    if let Err(e) = run(cli, output.clone()) {
+    if let Err(e) = run(cli, &output) {
         // Reset any existing colors only if color was enabled and stdout is a TTY
-        if color && std::io::stdout().is_terminal() {
+        if color && io::stdout().is_terminal() {
             print!("\x1b[0m");
-            let _ = std::io::stdout().flush();
+            if let Err(flush_err) = io::stdout().flush() {
+                eprintln!("Failed to flush stdout while resetting colors: {flush_err}");
+            }
         }
 
         // Check if this is a GodoError::CommandExit to get the specific exit code
@@ -150,21 +163,26 @@ fn main() -> Result<()> {
             *code
         } else {
             // Use the output handler to display the error
-            let _ = output.fail(&format!("{e:#}"));
-            let _ = output.finish();
+            if let Err(display_err) = output.fail(&format!("{e:#}")) {
+                eprintln!("Failed to report error via output handler: {display_err:#}");
+            }
+            if let Err(finish_err) = output.finish() {
+                eprintln!("Failed to flush output handler: {finish_err:#}");
+            }
             1
         };
 
-        std::process::exit(exit_code);
+        process::exit(exit_code);
     }
     Ok(())
 }
 
-fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
+/// Execute the selected CLI command using the provided output implementation.
+fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
     // Determine godo directory (priority: CLI flag > env var > default)
     let godo_dir = if let Some(dir) = &cli.dir {
         expand_tilde(dir)
-    } else if let Ok(env_dir) = std::env::var("GODO_DIR") {
+    } else if let Ok(env_dir) = env::var("GODO_DIR") {
         expand_tilde(&env_dir)
     } else {
         expand_tilde(DEFAULT_GODO_DIR)
@@ -179,7 +197,7 @@ fn run(cli: Cli, output: Arc<dyn Output>) -> Result<()> {
     let repo_dir = cli.repo_dir.as_ref().map(|repo| expand_tilde(repo));
 
     // Create Godo instance with the same output object
-    let godo = Godo::new(godo_dir, repo_dir, output.clone(), cli.no_prompt)
+    let godo = Godo::new(godo_dir, repo_dir, Arc::clone(output), cli.no_prompt)
         .context("Failed to initialize godo")?;
 
     match cli.command {

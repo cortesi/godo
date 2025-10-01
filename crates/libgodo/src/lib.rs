@@ -6,8 +6,11 @@
 //! manage sandboxes, and control how messages are emitted during operations.
 //! The CLI binary in `crates/godo` builds on top of this library.
 
+/// Helper routines for interacting with Git repositories.
 mod git;
+/// High-level orchestration for sandbox lifecycle management.
 mod godo;
+/// Output channel abstractions and implementations.
 mod output;
 
 /// Re-export of the main manager type and its error.

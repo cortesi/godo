@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 
+[lints]
+workspace = true
+
+
 [[bin]]
 name = "godo"
 path = "src/main.rs"
@@ -19,3 +23,5 @@ clap = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+

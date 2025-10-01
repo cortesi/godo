@@ -2,11 +2,14 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal,
 };
+use std::char;
 use std::collections::HashSet;
 use std::io::{self, Write};
+use std::result::Result as StdResult;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
+/// Indentation level (in spaces) used for nested output sections.
 const INDENT: usize = 4;
 
 /// Errors produced by [`Output`] implementations when interacting with the user
@@ -34,7 +37,8 @@ pub enum OutputError {
     Cancelled,
 }
 
-pub type Result<T> = std::result::Result<T, OutputError>;
+/// Convenience alias for output-related fallible operations.
+pub type Result<T> = StdResult<T, OutputError>;
 
 /// Abstraction over how user-facing messages and prompts are produced.
 ///
@@ -97,13 +101,15 @@ impl Output for Quiet {
     }
 
     fn section(&self, _header: &str) -> Box<dyn Output> {
-        Box::new(Quiet)
+        Box::new(Self)
     }
 }
 
 /// Color-capable terminal renderer for user messages and prompts.
 pub struct Terminal {
+    /// Whether to emit ANSI color sequences when writing to stdout.
     color_choice: ColorChoice,
+    /// Current indentation depth in spaces.
     indent: usize,
 }
 
@@ -124,6 +130,7 @@ impl Terminal {
         }
     }
 
+    /// Write `msg` using `color` while honoring the current indentation level.
     fn write_colored(&self, msg: &str, color: Color) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
         stdout.set_color(ColorSpec::new().set_fg(Some(color)))?;
@@ -133,6 +140,7 @@ impl Terminal {
         Ok(())
     }
 
+    /// Generate mnemonic shortcuts for the provided `options` list.
     fn generate_shortcuts(&self, options: &[String]) -> Vec<char> {
         let mut shortcuts = Vec::new();
         let mut used_chars = HashSet::new();
@@ -153,7 +161,7 @@ impl Terminal {
             // If no unique character found, use a number
             if shortcut.is_none() {
                 for i in 1..=9 {
-                    let num_char = std::char::from_digit(i, 10).unwrap();
+                    let num_char = char::from_digit(i, 10).unwrap();
                     if !used_chars.contains(&num_char) {
                         used_chars.insert(num_char);
                         shortcut = Some(num_char);
@@ -179,6 +187,7 @@ impl Terminal {
         shortcuts
     }
 
+    /// Render `option` while highlighting `shortcut` within the label when possible.
     fn print_option_with_shortcut(&self, option: &str, shortcut: char) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
 
@@ -274,8 +283,9 @@ impl Output for Terminal {
         // Ensure we restore terminal on exit
         let result = (|| -> Result<(usize, Option<char>)> {
             loop {
-                if let Event::Key(KeyEvent { code, modifiers, .. }) =
-                    event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
+                if let Event::Key(KeyEvent {
+                    code, modifiers, ..
+                }) = event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
                 {
                     match code {
                         KeyCode::Char(ch) => {
@@ -328,10 +338,11 @@ impl Output for Terminal {
 
     fn section(&self, header: &str) -> Box<dyn Output> {
         // Print the section header at current indent
-        let _ = self.message(header);
+        self.message(header)
+            .expect("section header message should succeed");
 
         // Return a new Terminal with increased indent
-        Box::new(Terminal {
+        Box::new(Self {
             color_choice: self.color_choice,
             indent: self.indent + INDENT,
         })
@@ -424,10 +435,14 @@ mod tests {
         let section1 = terminal.section("Section 1");
         // Can't directly test indent since it's private, but we can test behavior
         // by checking that section returns a valid Output implementation
-        let _ = section1.message("Test message");
+        section1
+            .message("Test message")
+            .expect("section message succeeds");
 
         // Test nested sections
         let section2 = section1.section("Section 2");
-        let _ = section2.message("Nested message");
+        section2
+            .message("Nested message")
+            .expect("nested section message succeeds");
     }
 }

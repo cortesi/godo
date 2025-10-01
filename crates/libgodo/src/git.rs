@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -20,6 +21,7 @@ fn run_git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Ok(output)
 }
 
+/// Walk up from `start_dir` to find the nearest repository root containing a `.git` directory.
 pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir;
     loop {
@@ -32,19 +34,19 @@ pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
         }
     }
 }
-
+/// Check whether the repository has staged or unstaged changes.
 pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
     let output = run_git(repo_path, &["status", "--porcelain"])?;
     let status_output = String::from_utf8_lossy(&output.stdout);
     Ok(!status_output.trim().is_empty())
 }
-
+/// Determine if a branch named `branch_name` exists in the repository.
 pub fn has_branch(repo_path: &Path, branch_name: &str) -> Result<bool> {
     let output = run_git(repo_path, &["branch", "--list", branch_name])?;
     let branch_output = String::from_utf8_lossy(&output.stdout);
     Ok(!branch_output.trim().is_empty())
 }
-
+/// Create a new worktree for `branch_name` under `worktree_path`.
 pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str) -> Result<()> {
     if has_branch(repo_path, branch_name)? {
         anyhow::bail!("Branch '{}' already exists", branch_name);
@@ -68,7 +70,7 @@ pub fn create_worktree(repo_path: &Path, worktree_path: &Path, branch_name: &str
 
     Ok(())
 }
-
+/// Remove the worktree located at `worktree_path`, optionally forcing removal.
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
     // First, check if the worktree path is currently registered by Git
     let exists = list_worktrees(repo_path)?
@@ -108,22 +110,24 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     match (can_a, can_b) {
         (Some(x), Some(y)) => x == y,
         _ => {
-            // Join b onto its parent if relative
+            // Join relative paths against the current working directory if available.
+            let cwd = env::current_dir().unwrap_or_default();
             let abs_a = if a.is_absolute() {
                 a.to_path_buf()
             } else {
-                std::env::current_dir().unwrap_or_default().join(a)
+                cwd.join(a)
             };
             let abs_b = if b.is_absolute() {
                 b.to_path_buf()
             } else {
-                std::env::current_dir().unwrap_or_default().join(b)
+                cwd.join(b)
             };
             abs_a == abs_b
         }
     }
 }
 
+/// Delete the branch named `branch_name`, forcing the deletion when `force` is `true`.
 pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result<()> {
     let mut args = vec!["branch"];
     if force {
@@ -137,11 +141,13 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result
     Ok(())
 }
 
+/// Stage all tracked and untracked changes in the repository.
 pub fn add_all(repo_path: &Path) -> Result<()> {
     run_git(repo_path, &["add", "."])?;
     Ok(())
 }
 
+/// Launch an interactive `git commit --verbose` session for the repository.
 pub fn commit_interactive(repo_path: &Path) -> Result<()> {
     let status = Command::new("git")
         .current_dir(repo_path)
@@ -159,27 +165,28 @@ pub fn commit_interactive(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create a commit with the provided `message`.
 pub fn commit(repo_path: &Path, message: &str) -> Result<()> {
     run_git(repo_path, &["commit", "-m", message])?;
     Ok(())
 }
 
+/// Metadata describing a Git worktree as reported by `git worktree list --porcelain`.
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
-    #[allow(dead_code)]
+    /// Filesystem path where the worktree is checked out.
     pub path: PathBuf,
+    /// Fully-qualified ref backing the worktree.
     pub branch: String,
-    #[allow(dead_code)]
-    pub head: String,
 }
 
+/// Return all worktrees known to the repository together with their metadata.
 pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
     let output = run_git(repo_path, &["worktree", "list", "--porcelain"])?;
     let output_str = String::from_utf8_lossy(&output.stdout);
 
     let mut worktrees = Vec::new();
     let mut current_worktree = None;
-    let mut current_head = None;
     let mut current_branch = None;
 
     for line in output_str.lines() {
@@ -189,13 +196,10 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
                 worktrees.push(WorktreeInfo {
                     path,
                     branch: current_branch.take().unwrap_or_default(),
-                    head: current_head.take().unwrap_or_default(),
                 });
             }
             // Start new worktree
             current_worktree = Some(PathBuf::from(path_str));
-        } else if let Some(head) = line.strip_prefix("HEAD ") {
-            current_head = Some(head.to_string());
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = Some(branch.to_string());
         }
@@ -206,13 +210,13 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
         worktrees.push(WorktreeInfo {
             path,
             branch: current_branch.unwrap_or_default(),
-            head: current_head.unwrap_or_default(),
         });
     }
 
     Ok(worktrees)
 }
 
+/// Enumerate every branch in the repository, returning their short names.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
     let output = run_git(repo_path, &["branch", "--format=%(refname:short)"])?;
     let output_str = String::from_utf8_lossy(&output.stdout);
@@ -224,7 +228,7 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Check if a branch has commits that haven't been merged to the main branch
+/// Check if a branch has commits that have not been merged to the main branch.
 pub fn has_unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<bool> {
     // First, try to find the main branch (could be main, master, or something else)
     let main_branch = if has_branch(repo_path, "main")? {
@@ -255,13 +259,13 @@ pub fn has_unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<bool>
     }
 }
 
-/// Reset the working directory to match HEAD, removing all uncommitted changes
+/// Reset the working directory to match `HEAD`, removing all uncommitted changes.
 pub fn reset_hard(repo_path: &Path) -> Result<()> {
     run_git(repo_path, &["reset", "--hard", "HEAD"])?;
     Ok(())
 }
 
-/// Clean untracked files and directories
+/// Remove untracked files and directories from the working tree.
 pub fn clean(repo_path: &Path) -> Result<()> {
     run_git(repo_path, &["clean", "-fd"])?;
     Ok(())
@@ -273,7 +277,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn setup_test_repo() -> Result<(TempDir, std::path::PathBuf)> {
+    fn setup_test_repo() -> Result<(TempDir, PathBuf)> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path().to_path_buf();
 
@@ -607,7 +611,11 @@ mod tests {
         run_git(&root_path, &["init"])?;
 
         // Test from root directory
-        assert_eq!(find_root(&root_path), Some(root_path.clone()));
+        assert!(
+            find_root(&root_path)
+                .as_ref()
+                .is_some_and(|path| path == &root_path)
+        );
 
         // Create nested directories
         let sub_dir = root_path.join("src");
@@ -616,10 +624,18 @@ mod tests {
         fs::create_dir(&nested_dir)?;
 
         // Test from subdirectory
-        assert_eq!(find_root(&sub_dir), Some(root_path.clone()));
+        assert!(
+            find_root(&sub_dir)
+                .as_ref()
+                .is_some_and(|path| path == &root_path)
+        );
 
         // Test from deeply nested directory
-        assert_eq!(find_root(&nested_dir), Some(root_path.clone()));
+        assert!(
+            find_root(&nested_dir)
+                .as_ref()
+                .is_some_and(|path| path == &root_path)
+        );
 
         // Test from non-git directory
         let non_git_dir = temp_dir.path().parent().unwrap();

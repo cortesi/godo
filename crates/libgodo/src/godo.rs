@@ -1,15 +1,19 @@
 use clonetree::{Options, clone_tree};
+use std::collections::HashSet;
+use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use thiserror::Error;
 
 use crate::git;
-use crate::output::Output;
+use crate::output::{Output, OutputError as OutputErr};
 
-/// Custom Result type for Godo operations
-pub type Result<T> = std::result::Result<T, GodoError>;
+/// Custom Result type for Godo operations.
+pub type Result<T> = StdResult<T, GodoError>;
 
 /// Godo-specific error types
 #[derive(Error, Debug)]
@@ -44,18 +48,24 @@ pub enum GodoError {
 
     /// The selected output backend reported an error.
     #[error("Output operation failed: {0}")]
-    OutputError(#[from] crate::output::OutputError),
+    OutputError(#[from] OutputErr),
 
     /// An underlying I/O operation failed.
     #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(#[from] io::Error),
 }
 
+/// Follow-up action to take after executing a sandboxed command.
 enum PostRunAction {
+    /// Commit all tracked changes within the sandbox.
     Commit,
+    /// Re-open an interactive shell in the sandbox.
     Shell,
+    /// Leave the sandbox intact without committing.
     Keep,
+    /// Discard the sandbox entirely.
     Discard,
+    /// Create a branch from the sandbox contents.
     Branch,
 }
 
@@ -156,7 +166,7 @@ fn clean_name(name: &str) -> String {
         .collect()
 }
 
-/// Extracts and cleans the project name from a git repository path
+/// Extract and clean the project name from a Git repository path.
 fn project_name(repo_path: &Path) -> Result<String> {
     let name = repo_path
         .file_name()
@@ -167,7 +177,7 @@ fn project_name(repo_path: &Path) -> Result<String> {
                 .components()
                 .next_back()
                 .and_then(|c| match c {
-                    std::path::Component::Normal(name) => name.to_str(),
+                    Component::Normal(name) => name.to_str(),
                     _ => None,
                 })
                 .unwrap_or("root")
@@ -184,7 +194,7 @@ fn project_name(repo_path: &Path) -> Result<String> {
     Ok(cleaned)
 }
 
-/// Returns the git branch name for a given sandbox name
+/// Return the Git branch name for a given sandbox name.
 fn branch_name(sandbox_name: &str) -> String {
     format!("godo/{sandbox_name}")
 }
@@ -197,9 +207,13 @@ fn branch_name(sandbox_name: &str) -> String {
 /// operations to create a sandbox, run commands inside it, and to list,
 /// remove, or clean existing sandboxes.
 pub struct Godo {
+    /// Base directory where per-project sandbox directories live.
     godo_dir: PathBuf,
+    /// Root of the Git repository the sandboxes operate on.
     repo_dir: PathBuf,
+    /// Whether user prompts should be skipped in favor of defaults.
     no_prompt: bool,
+    /// Output channel used for rendering status and prompts.
     output: Arc<dyn Output>,
 }
 
@@ -226,7 +240,7 @@ impl Godo {
             dir
         } else {
             // Find git root from current directory
-            let current_dir = std::env::current_dir().map_err(|_| {
+            let current_dir = env::current_dir().map_err(|_| {
                 GodoError::ContextError("Failed to get current directory".to_string())
             })?;
             git::find_root(&current_dir).ok_or(GodoError::ContextError(
@@ -385,43 +399,41 @@ impl Godo {
             }
         }
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let status = if command.is_empty() {
             // Interactive shell
             Command::new(&shell)
                 .current_dir(&sandbox_path)
                 .status()
                 .map_err(|e| GodoError::OperationError(format!("Failed to start shell: {e}")))?
+        } else if force_shell {
+            // Force shell evaluation (e.g., pipes, globs). Users should quote the entire command
+            // in their outer shell, e.g.: --sh 'echo "a b" | wc -w'
+            let command_string = command.join(" ");
+            Command::new(&shell)
+                .arg("-c")
+                .arg(&command_string)
+                .current_dir(&sandbox_path)
+                .status()
+                .map_err(|e| GodoError::OperationError(format!("Failed to run command: {e}")))?
         } else {
-            if force_shell {
-                // Force shell evaluation (e.g., pipes, globs). Users should quote the entire command
-                // in their outer shell, e.g.: --sh 'echo "a b" | wc -w'
-                let command_string = command.join(" ");
-                Command::new(&shell)
-                    .arg("-c")
-                    .arg(&command_string)
-                    .current_dir(&sandbox_path)
-                    .status()
-                    .map_err(|e| GodoError::OperationError(format!("Failed to run command: {e}")))?
-            } else {
-                // Exec program directly to preserve argument boundaries and quoting
-                let program = &command[0];
-                let args = &command[1..];
-                match Command::new(program)
-                    .args(args)
-                    .current_dir(&sandbox_path)
-                    .status()
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        // Map command-not-found to standard 127 like shells do
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            return Err(GodoError::CommandExit { code: 127 });
-                        }
-                        return Err(GodoError::OperationError(format!(
-                            "Failed to run command: {e}"
-                        )));
+            // Exec program directly to preserve argument boundaries and quoting
+            let program = &command[0];
+            let args = &command[1..];
+            match Command::new(program)
+                .args(args)
+                .current_dir(&sandbox_path)
+                .status()
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    // Map command-not-found to standard 127 like shells do
+                    if e.kind() == io::ErrorKind::NotFound {
+                        return Err(GodoError::CommandExit { code: 127 });
                     }
+                    return Err(GodoError::OperationError(format!(
+                        "Failed to run command: {e}"
+                    )));
                 }
             }
         };
@@ -590,10 +602,11 @@ impl Godo {
         }))
     }
 
+    /// Gather every sandbox name present in branches, worktrees, or on disk.
     fn all_sandbox_names(&self) -> Result<Vec<String>> {
         let project_dir = self.project_dir()?;
 
-        let mut all_names = std::collections::HashSet::new();
+        let mut all_names = HashSet::new();
 
         let all_branches = git::list_branches(&self.repo_dir)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
@@ -860,6 +873,7 @@ impl Godo {
     }
 }
 
+/// Ensure the primary godo directory hierarchy exists.
 fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
     // Create main godo directory
     fs::create_dir_all(godo_dir)?;
@@ -869,7 +883,7 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::{Output, Quiet};
+    use crate::output::{Output, Quiet, Result as OutputResult};
     use std::path::PathBuf;
 
     #[test]
@@ -1041,36 +1055,36 @@ mod tests {
     }
 
     impl Output for MockOutput {
-        fn message(&self, _msg: &str) -> crate::output::Result<()> {
+        fn message(&self, _msg: &str) -> OutputResult<()> {
             Ok(())
         }
 
-        fn success(&self, _msg: &str) -> crate::output::Result<()> {
+        fn success(&self, _msg: &str) -> OutputResult<()> {
             Ok(())
         }
 
-        fn warn(&self, _msg: &str) -> crate::output::Result<()> {
+        fn warn(&self, _msg: &str) -> OutputResult<()> {
             Ok(())
         }
 
-        fn fail(&self, _msg: &str) -> crate::output::Result<()> {
+        fn fail(&self, _msg: &str) -> OutputResult<()> {
             Ok(())
         }
 
-        fn confirm(&self, _prompt: &str) -> crate::output::Result<bool> {
+        fn confirm(&self, _prompt: &str) -> OutputResult<bool> {
             Ok(true)
         }
 
-        fn select(&self, _prompt: &str, _options: Vec<String>) -> crate::output::Result<usize> {
+        fn select(&self, _prompt: &str, _options: Vec<String>) -> OutputResult<usize> {
             Ok(self.selection)
         }
 
-        fn finish(&self) -> crate::output::Result<()> {
+        fn finish(&self) -> OutputResult<()> {
             Ok(())
         }
 
         fn section(&self, _header: &str) -> Box<dyn Output> {
-            Box::new(MockOutput {
+            Box::new(Self {
                 selection: self.selection,
             })
         }
@@ -1085,8 +1099,8 @@ mod tests {
         let repo_dir = temp_dir.path().join("repo");
 
         // Initialize a git repository
-        std::fs::create_dir_all(&repo_dir).unwrap();
-        std::process::Command::new("git")
+        fs::create_dir_all(&repo_dir).unwrap();
+        Command::new("git")
             .current_dir(&repo_dir)
             .args(["init"])
             .output()

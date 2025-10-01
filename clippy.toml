@@ -1,0 +1,16 @@
+## Project-wide Clippy preferences
+## Note: Most lint severities remain crate-scoped; crates that must deny a lint
+## explicitly do so via crate-level attributes.
+
+# Prefer explicit imports over wildcard imports.
+warn-on-all-wildcard-imports = true
+
+# Allow common prints/dbg in tests.
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+allow-panic-in-tests = true
+
+# Quality metrics
+excessive-nesting-threshold = 8
+too-many-lines-threshold = 800
+cognitive-complexity-threshold = 25
