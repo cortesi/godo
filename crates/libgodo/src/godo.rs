@@ -11,7 +11,7 @@ use clonetree::{Options, clone_tree};
 use thiserror::Error;
 
 use crate::{
-    git,
+    git::{self, MergeStatus},
     output::{Output, OutputError as OutputErr},
 };
 
@@ -84,8 +84,8 @@ struct Sandbox {
     has_worktree_dir: bool,
     /// Whether there are any staged or unstaged uncommitted changes in the worktree
     has_uncommitted_changes: bool,
-    /// Whether the branch has commits that have not been merged yet
-    has_unmerged_commits: bool,
+    /// Merge relationship between the sandbox branch and its integration target
+    merge_status: MergeStatus,
     /// Whether the worktree is dangling (no backing directory)
     is_dangling: bool,
 }
@@ -101,11 +101,12 @@ impl Sandbox {
         let mut attributes = Vec::new();
 
         if self.has_branch {
-            if self.has_unmerged_commits {
-                attributes.push("branch [unmerged]");
-            } else {
-                attributes.push("branch [merged]");
-            }
+            let branch_status = match self.merge_status {
+                MergeStatus::Diverged => "branch [unmerged]",
+                MergeStatus::Clean => "branch [merged]",
+                MergeStatus::Unknown => "branch [merge status unknown]",
+            };
+            attributes.push(branch_status);
         }
 
         if self.has_worktree {
@@ -602,11 +603,11 @@ impl Godo {
             false
         };
 
-        // Check for unmerged commits (only if branch exists)
-        let has_unmerged_commits = if has_branch {
-            git::has_unmerged_commits(&self.repo_dir, &branch_name).unwrap_or(false)
+        // Determine merge status relative to integration target (only if branch exists)
+        let merge_status = if has_branch {
+            git::branch_merge_status(&self.repo_dir, &branch_name).unwrap_or(MergeStatus::Unknown)
         } else {
-            false
+            MergeStatus::Unknown
         };
 
         // Check if dangling (directory exists but no branch)
@@ -618,7 +619,7 @@ impl Godo {
             has_worktree,
             has_worktree_dir,
             has_uncommitted_changes,
-            has_unmerged_commits,
+            merge_status,
             is_dangling,
         }))
     }
@@ -718,14 +719,27 @@ impl Godo {
                     return Err(GodoError::UserAborted);
                 }
             }
-            if status.has_unmerged_commits {
+            if matches!(
+                status.merge_status,
+                MergeStatus::Diverged | MergeStatus::Unknown
+            ) {
+                let warning = if matches!(status.merge_status, MergeStatus::Unknown) {
+                    "branch merge status is unknown (use --force to remove)"
+                } else {
+                    "branch has unmerged commits (use --force to remove)"
+                };
                 if self.no_prompt {
                     return Err(GodoError::SandboxError {
                         name: name.to_string(),
-                        message: "branch has unmerged commits (use --force to remove)".to_string(),
+                        message: warning.to_string(),
                     });
                 }
-                if !self.prompt_confirm("Branch has unmerged commits. Remove anyway?")? {
+                let prompt = if matches!(status.merge_status, MergeStatus::Unknown) {
+                    "Branch merge status is unknown. Remove anyway?"
+                } else {
+                    "Branch has unmerged commits. Remove anyway?"
+                };
+                if !self.prompt_confirm(prompt)? {
                     return Err(GodoError::UserAborted);
                 }
             }
@@ -826,7 +840,7 @@ impl Godo {
         // 2. It has no unmerged commits
         // 3. Either we successfully removed the worktree OR (there was no worktree to begin with AND no worktree directory exists)
         if status.has_branch
-            && !status.has_unmerged_commits
+            && matches!(status.merge_status, MergeStatus::Clean)
             && (worktree_removed || (!status.has_worktree && !status.has_worktree_dir))
         {
             git::delete_branch(&self.repo_dir, &branch, false)
@@ -843,8 +857,12 @@ impl Godo {
             section.success(&format!("fully merged branch {branch} removed"))?;
         } else if status.has_worktree && status.has_uncommitted_changes {
             section.warn("not cleaned: has uncommitted changes")?;
-        } else if status.has_branch && status.has_unmerged_commits {
+        } else if status.has_branch && matches!(status.merge_status, MergeStatus::Diverged) {
             section.warn(&format!("branch {branch} has unmerged commits"))?;
+        } else if status.has_branch && matches!(status.merge_status, MergeStatus::Unknown) {
+            section.warn(&format!(
+                "branch {branch} kept because merge status could not be determined"
+            ))?;
         } else {
             section.message("unchanged")?;
         }

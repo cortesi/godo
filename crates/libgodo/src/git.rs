@@ -231,35 +231,112 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Check if a branch has commits that have not been merged to the main branch.
-pub fn has_unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<bool> {
-    // First, try to find the main branch (could be main, master, or something else)
-    let main_branch = if has_branch(repo_path, "main")? {
-        "main"
-    } else if has_branch(repo_path, "master")? {
-        "master"
-    } else {
-        // If no main/master, can't determine if there are unmerged commits
-        return Ok(false);
-    };
+/// Merge relationship between a sandbox branch and its integration target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeStatus {
+    /// The branch contains commits that are not on the integration target.
+    Diverged,
+    /// The branch tip is fully merged into the integration target.
+    Clean,
+    /// The relationship could not be determined (missing upstream, missing remote, etc.).
+    Unknown,
+}
 
-    // Check if the branch has commits not in main
-    // Using rev-list to count commits in branch that are not in main
-    match run_git(
+/// Determine if a branch is ahead of its integration target.
+pub fn branch_merge_status(repo_path: &Path, branch_name: &str) -> Result<MergeStatus> {
+    // If the branch itself is missing, we cannot establish a relationship.
+    if !has_branch(repo_path, branch_name)? {
+        return Ok(MergeStatus::Unknown);
+    }
+
+    let mut candidates = Vec::new();
+
+    if let Some(upstream) = upstream_of(repo_path, branch_name)? {
+        candidates.push(upstream);
+    }
+
+    if let Some(default_target) = default_integration_target(repo_path)?
+        && !candidates.contains(&default_target)
+    {
+        candidates.push(default_target);
+    }
+
+    // Fall back to common branch names if everything else failed.
+    for fallback in ["main", "master"] {
+        if candidates.iter().any(|c| c == fallback) {
+            continue;
+        }
+        if has_branch(repo_path, fallback)? {
+            candidates.push(fallback.to_string());
+        }
+    }
+
+    for target in candidates {
+        match run_git(
+            repo_path,
+            &["rev-list", "--count", &format!("{target}..{branch_name}")],
+        ) {
+            Ok(output) => {
+                let count = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or(0);
+                return if count > 0 {
+                    Ok(MergeStatus::Diverged)
+                } else {
+                    Ok(MergeStatus::Clean)
+                };
+            }
+            Err(_) => {
+                // Try next candidate; failing to look at one target shouldn't abort the search.
+                continue;
+            }
+        }
+    }
+
+    Ok(MergeStatus::Unknown)
+}
+
+/// Determine the configured upstream for a given branch, if any.
+fn upstream_of(repo_path: &Path, branch_name: &str) -> Result<Option<String>> {
+    let ref_name = format!("refs/heads/{branch_name}");
+    let output = run_git(
+        repo_path,
+        &["for-each-ref", "--format=%(upstream:short)", &ref_name],
+    )?;
+    let upstream = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if upstream.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(upstream))
+    }
+}
+
+/// Discover a reasonable default integration target for the repository.
+fn default_integration_target(repo_path: &Path) -> Result<Option<String>> {
+    if let Ok(output) = run_git(
         repo_path,
         &[
-            "rev-list",
-            "--count",
-            &format!("{main_branch}..{branch_name}"),
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
         ],
     ) {
-        Ok(output) => {
-            let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let count = count_str.parse::<u32>().unwrap_or(0);
-            Ok(count > 0)
+        let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !head.is_empty() {
+            return Ok(Some(head));
         }
-        Err(_) => Ok(false),
     }
+
+    if let Ok(output) = run_git(repo_path, &["config", "--get", "init.defaultBranch"]) {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Ok(Some(branch));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Reset the working directory to match `HEAD`, removing all uncommitted changes.
@@ -706,6 +783,56 @@ mod tests {
         // Should have no uncommitted changes after cleaning
         assert!(!has_uncommitted_changes(&repo_path)?);
         assert!(!repo_path.join("untracked.txt").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_branch_merge_status_detects_diverged_and_clean() -> Result<()> {
+        let (_temp_dir, repo_path) = setup_test_repo()?;
+
+        fs::write(repo_path.join("base.txt"), "base")?;
+        run_git(&repo_path, &["add", "base.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Base commit"])?;
+
+        run_git(&repo_path, &["checkout", "-b", "feature"])?;
+        fs::write(repo_path.join("feature.txt"), "work in progress")?;
+        run_git(&repo_path, &["add", "feature.txt"])?;
+        run_git(&repo_path, &["commit", "-m", "Feature work"])?;
+
+        assert_eq!(
+            branch_merge_status(&repo_path, "feature")?,
+            MergeStatus::Diverged
+        );
+
+        run_git(&repo_path, &["checkout", "main"])?;
+        run_git(&repo_path, &["merge", "feature"])?;
+
+        assert_eq!(
+            branch_merge_status(&repo_path, "feature")?,
+            MergeStatus::Clean
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_branch_merge_status_unknown_without_baseline() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path().to_path_buf();
+
+        run_git(&repo_path, &["init", "-b", "release"])?;
+        run_git(&repo_path, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo_path, &["config", "user.name", "Test User"])?;
+        run_git(
+            &repo_path,
+            &["commit", "--allow-empty", "-m", "Initial commit"],
+        )?;
+
+        assert_eq!(
+            branch_merge_status(&repo_path, "release")?,
+            MergeStatus::Unknown
+        );
 
         Ok(())
     }
