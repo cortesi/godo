@@ -179,8 +179,10 @@ pub fn commit(repo_path: &Path, message: &str) -> Result<()> {
 pub struct WorktreeInfo {
     /// Filesystem path where the worktree is checked out.
     pub path: PathBuf,
-    /// Fully-qualified ref backing the worktree.
-    pub branch: String,
+    /// Fully-qualified ref backing the worktree, when the worktree is attached to a branch.
+    pub branch: Option<String>,
+    /// Whether the worktree is currently checked out in detached HEAD state.
+    pub is_detached: bool,
 }
 
 /// Return all worktrees known to the repository together with their metadata.
@@ -191,6 +193,7 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
     let mut worktrees = Vec::new();
     let mut current_worktree = None;
     let mut current_branch = None;
+    let mut current_detached = false;
 
     for line in output_str.lines() {
         if let Some(path_str) = line.strip_prefix("worktree ") {
@@ -198,13 +201,17 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
             if let Some(path) = current_worktree.take() {
                 worktrees.push(WorktreeInfo {
                     path,
-                    branch: current_branch.take().unwrap_or_default(),
+                    branch: current_branch.take(),
+                    is_detached: current_detached,
                 });
             }
             // Start new worktree
             current_worktree = Some(PathBuf::from(path_str));
+            current_detached = false;
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = Some(branch.to_string());
+        } else if line == "detached" {
+            current_detached = true;
         }
     }
 
@@ -212,7 +219,8 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
     if let Some(path) = current_worktree {
         worktrees.push(WorktreeInfo {
             path,
-            branch: current_branch.unwrap_or_default(),
+            branch: current_branch,
+            is_detached: current_detached,
         });
     }
 

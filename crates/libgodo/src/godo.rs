@@ -82,6 +82,12 @@ struct Sandbox {
     has_worktree: bool,
     /// Whether the worktree directory path exists
     has_worktree_dir: bool,
+    /// Branch currently checked out in the worktree, sans refs prefix, when known.
+    worktree_branch: Option<String>,
+    /// Whether the worktree is in detached HEAD state.
+    worktree_detached: bool,
+    /// Whether the worktree is checking out the expected sandbox branch when attached.
+    worktree_branch_matches: bool,
     /// Whether there are any staged or unstaged uncommitted changes in the worktree
     has_uncommitted_changes: bool,
     /// Merge relationship between the sandbox branch and its integration target
@@ -93,7 +99,49 @@ struct Sandbox {
 impl Sandbox {
     /// Returns true if the sandbox has both a worktree and a branch
     fn is_live(&self) -> bool {
-        self.has_worktree && self.has_branch
+        self.has_branch
+            && self.has_worktree
+            && (self.worktree_detached || self.worktree_branch_matches)
+    }
+
+    /// Summarize which sandbox components are currently present.
+    fn component_status(&self) -> String {
+        let branch = if self.has_branch {
+            "present"
+        } else {
+            "missing"
+        };
+        let worktree = if self.has_worktree {
+            "present"
+        } else {
+            "missing"
+        };
+        let directory = if self.has_worktree_dir {
+            "present"
+        } else {
+            "missing"
+        };
+
+        let mut parts = vec![
+            format!("branch: {branch}"),
+            format!("worktree: {worktree}"),
+            format!("directory: {directory}"),
+        ];
+
+        if self.is_dangling {
+            parts.push("state: dangling".to_string());
+        }
+
+        if self.has_worktree {
+            if self.worktree_detached {
+                parts.push("worktree-branch: detached".to_string());
+            } else if let Some(branch) = &self.worktree_branch
+                && !self.worktree_branch_matches {
+                    parts.push(format!("worktree-branch: {branch}"));
+                }
+        }
+
+        parts.join(", ")
     }
 
     /// Display the sandbox status using the provided output
@@ -239,6 +287,10 @@ impl Godo {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
 
+        // Normalize godo directory to an absolute path when possible so we
+        // compare paths against Git's absolute worktree paths consistently.
+        let godo_dir = fs::canonicalize(&godo_dir).unwrap_or(godo_dir);
+
         // Determine repository directory
         let repo_dir = if let Some(dir) = repo_dir {
             dir
@@ -251,6 +303,9 @@ impl Godo {
                 "Not in a git repository".to_string(),
             ))?
         };
+
+        // Canonicalize the repository root to keep sandbox paths stable.
+        let repo_dir = fs::canonicalize(&repo_dir).unwrap_or(repo_dir);
 
         Ok(Self {
             godo_dir,
@@ -351,9 +406,10 @@ impl Godo {
                     "Using existing sandbox {sandbox_name} at {sandbox_path:?}"
                 ))?;
             } else {
+                let status = sandbox.component_status();
                 return Err(GodoError::SandboxError {
                     name: sandbox_name.to_string(),
-                    message: "exists but is not live - remove it first".to_string(),
+                    message: format!("exists but is not live - remove it first ({status})"),
                 });
             }
         } else {
@@ -582,11 +638,27 @@ impl Godo {
         // Get all worktrees to check if this sandbox has a worktree attached in the godo directory
         let worktrees = git::list_worktrees(&self.repo_dir)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
-        let has_worktree = worktrees.iter().any(|w| {
-            let branch = w.branch.strip_prefix("refs/heads/").unwrap_or(&w.branch);
-            // Check both that the branch matches AND the worktree path is the expected sandbox path
-            branch == branch_name && w.path == sandbox_path
-        });
+        let matching_worktree = worktrees.iter().find(|w| w.path == sandbox_path);
+
+        let has_worktree = matching_worktree.is_some();
+        let mut worktree_branch = None;
+        let mut worktree_detached = false;
+        let mut branch_matches_worktree = false;
+
+        if let Some(info) = matching_worktree {
+            worktree_detached = info.is_detached;
+            if let Some(branch) = &info.branch {
+                let normalized = branch
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch)
+                    .to_string();
+                branch_matches_worktree = normalized == branch_name;
+                worktree_branch = Some(normalized);
+            } else {
+                // Detached worktrees still count as present for reuse purposes.
+                branch_matches_worktree = true;
+            }
+        }
 
         // Check if the worktree directory exists
         let has_worktree_dir = sandbox_path.exists();
@@ -595,13 +667,6 @@ impl Godo {
         if !has_branch && !has_worktree && !has_worktree_dir {
             return Ok(None);
         }
-
-        // Check for uncommitted changes (only if worktree exists)
-        let has_uncommitted_changes = if has_worktree && has_worktree_dir {
-            git::has_uncommitted_changes(&sandbox_path).unwrap_or(false)
-        } else {
-            false
-        };
 
         // Determine merge status relative to integration target (only if branch exists)
         let merge_status = if has_branch {
@@ -613,11 +678,21 @@ impl Godo {
         // Check if dangling (directory exists but no branch)
         let is_dangling = has_worktree_dir && !has_branch;
 
+        // Check for uncommitted changes (only if worktree exists)
+        let has_uncommitted_changes = if has_worktree && has_worktree_dir {
+            git::has_uncommitted_changes(&sandbox_path).unwrap_or(false)
+        } else {
+            false
+        };
+
         Ok(Some(Sandbox {
             name: name.to_string(),
             has_branch,
             has_worktree,
             has_worktree_dir,
+            worktree_branch,
+            worktree_detached,
+            worktree_branch_matches: branch_matches_worktree,
             has_uncommitted_changes,
             merge_status,
             is_dangling,
@@ -641,12 +716,11 @@ impl Godo {
         for worktree in git::list_worktrees(&self.repo_dir)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
         {
-            let branch = worktree
-                .branch
-                .strip_prefix("refs/heads/")
-                .unwrap_or(&worktree.branch);
-            if let Some(name) = branch.strip_prefix("godo/") {
-                all_names.insert(name.to_string());
+            if let Some(branch) = &worktree.branch {
+                let branch = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+                if let Some(name) = branch.strip_prefix("godo/") {
+                    all_names.insert(name.to_string());
+                }
             }
         }
 
@@ -913,10 +987,28 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::output::{Output, Quiet, Result as OutputResult};
+
+    struct DirGuard {
+        original: PathBuf,
+    }
+
+    impl DirGuard {
+        fn change_to(target: &Path) -> Self {
+            let original = env::current_dir().unwrap();
+            env::set_current_dir(target).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for DirGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.original).unwrap();
+        }
+    }
 
     #[test]
     fn test_clean_name() {
@@ -969,6 +1061,27 @@ mod tests {
         for (input, expected) in test_cases {
             assert_eq!(clean_name(input), expected, "Failed for input: '{input}'");
         }
+    }
+
+    #[test]
+    fn sandbox_component_status_reports_components() {
+        let sandbox = Sandbox {
+            name: "example".to_string(),
+            has_branch: true,
+            has_worktree: true,
+            has_worktree_dir: true,
+            worktree_branch: None,
+            worktree_detached: true,
+            worktree_branch_matches: true,
+            has_uncommitted_changes: false,
+            merge_status: MergeStatus::Unknown,
+            is_dangling: false,
+        };
+
+        assert_eq!(
+            sandbox.component_status(),
+            "branch: present, worktree: present, directory: present, worktree-branch: detached"
+        );
     }
 
     #[test]
@@ -1071,14 +1184,74 @@ mod tests {
 
         // Test project_dir method
         let project_dir = godo.project_dir().unwrap();
-        assert_eq!(project_dir, godo_dir.join("my-project"));
+        let canonical_godo_dir = fs::canonicalize(&godo_dir).unwrap_or(godo_dir);
+        assert_eq!(project_dir, canonical_godo_dir.join("my-project"));
 
         // Test sandbox_path method
         let sandbox_path = godo.sandbox_path("test-sandbox").unwrap();
         assert_eq!(
             sandbox_path,
-            godo_dir.join("my-project").join("test-sandbox")
+            canonical_godo_dir.join("my-project").join("test-sandbox")
         );
+    }
+
+    #[test]
+    fn run_reuses_sandbox_with_relative_godo_dir() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["config", "user.name", "Test User"])
+            .output()
+            .unwrap();
+
+        fs::write(repo_dir.join("README.md"), "sandbox test").unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["add", "README.md"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["commit", "-m", "Initial commit"])
+            .output()
+            .unwrap();
+
+        let _guard = DirGuard::change_to(&repo_dir);
+
+        let godo_dir = PathBuf::from("relative-godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let godo = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
+
+        let command = vec!["echo".to_string(), "hi".to_string()];
+        godo.run(true, None, false, &[], "test-sandbox", &command)
+            .unwrap();
+
+        let sandbox_path = godo.sandbox_path("test-sandbox").unwrap();
+        Command::new("git")
+            .current_dir(&sandbox_path)
+            .args(["checkout", "--detach", "HEAD"])
+            .status()
+            .unwrap();
+
+        godo.run(true, None, false, &[], "test-sandbox", &command)
+            .unwrap();
+
+        godo.remove("test-sandbox", true).unwrap();
     }
 
     // Mock output for testing prompt_for_action
