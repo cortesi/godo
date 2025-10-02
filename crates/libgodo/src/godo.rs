@@ -136,9 +136,10 @@ impl Sandbox {
             if self.worktree_detached {
                 parts.push("worktree-branch: detached".to_string());
             } else if let Some(branch) = &self.worktree_branch
-                && !self.worktree_branch_matches {
-                    parts.push(format!("worktree-branch: {branch}"));
-                }
+                && !self.worktree_branch_matches
+            {
+                parts.push(format!("worktree-branch: {branch}"));
+            }
         }
 
         parts.join(", ")

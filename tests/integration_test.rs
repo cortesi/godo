@@ -1,67 +1,22 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_repo, git, godo_binary, run_godo};
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn setup_test_repo() -> Result<(TempDir, PathBuf)> {
-    let temp_dir = TempDir::new()?;
-    let repo_path = temp_dir.path().join("test-project");
-    fs::create_dir(&repo_path)?;
-
-    // Initialize git repository
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["init"])
-        .output()?;
-
-    // Configure git user for commits
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["config", "user.email", "test@example.com"])
-        .output()?;
-
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["config", "user.name", "Test User"])
-        .output()?;
-
-    // Create initial commit
-    fs::write(repo_path.join("README.md"), "# Test Project")?;
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["add", "README.md"])
-        .output()?;
-
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["commit", "-m", "Initial commit"])
-        .output()?;
-
-    Ok((temp_dir, repo_path))
-}
-
 #[test]
 fn test_project_directory_structure() -> Result<()> {
-    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
-    // Build the path to the godo binary
-    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
-
     // Run godo to create a sandbox with --keep flag
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "test-sandbox",
-            "echo",
-            "test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "test-sandbox", "echo", "test"],
+    )?;
 
     if !output.status.success() {
         eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -81,55 +36,15 @@ fn test_project_directory_structure() -> Result<()> {
 
 #[test]
 fn test_project_name_cleaning() -> Result<()> {
-    let temp_dir = TempDir::new()?;
-    let repo_path = temp_dir.path().join("test.project@2024");
-    fs::create_dir(&repo_path)?;
-
-    // Initialize git repository
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["init"])
-        .output()?;
-
-    // Configure git user
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["config", "user.email", "test@example.com"])
-        .output()?;
-
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["config", "user.name", "Test User"])
-        .output()?;
-
-    // Create initial commit
-    fs::write(repo_path.join("README.md"), "# Test Project")?;
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["add", "README.md"])
-        .output()?;
-
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["commit", "-m", "Initial commit"])
-        .output()?;
-
+    let (temp_dir, repo_path) = create_repo("test.project@2024")?;
     let godo_dir = TempDir::new()?;
-    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
 
     // Run godo with --keep flag
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "test-sandbox",
-            "echo",
-            "test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "test-sandbox", "echo", "test"],
+    )?;
 
     if !output.status.success() {
         eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -149,66 +64,40 @@ fn test_project_name_cleaning() -> Result<()> {
 
 #[test]
 fn test_clean_command_section_output() -> Result<()> {
-    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
-    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
 
     // Create multiple sandboxes with different states
     // 1. Clean sandbox (no changes)
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "clean-sandbox",
-            "echo",
-            "test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "clean-sandbox", "echo", "test"],
+    )?;
     assert!(output.status.success());
 
     // 2. Sandbox with uncommitted changes
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "dirty-sandbox",
-            "touch",
-            "newfile.txt",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "dirty-sandbox", "touch", "newfile.txt"],
+    )?;
     assert!(output.status.success());
 
     // 3. Another clean sandbox
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "another-clean",
-            "echo",
-            "another test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "another-clean", "echo", "another", "test"],
+    )?;
     assert!(output.status.success());
 
     // Now run clean command on all sandboxes
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "--no-prompt", // Skip confirmation prompts
-            "clean",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["--no-prompt", "clean"],
+    )?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -241,16 +130,11 @@ fn test_clean_command_section_output() -> Result<()> {
 
     // Clean up remaining sandboxes
     for sandbox in ["clean-sandbox", "dirty-sandbox", "another-clean"] {
-        let _ = Command::new(&godo_binary)
-            .current_dir(&repo_path)
-            .args([
-                "--dir",
-                godo_dir.path().to_str().unwrap(),
-                "remove",
-                "--force",
-                sandbox,
-            ])
-            .output();
+        let _ = run_godo(
+            &repo_path,
+            godo_dir.path(),
+            &["remove", "--force", sandbox],
+        );
     }
 
     Ok(())
@@ -258,23 +142,15 @@ fn test_clean_command_section_output() -> Result<()> {
 
 #[test]
 fn test_sandbox_protection() -> Result<()> {
-    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
-    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
 
     // First, create a sandbox
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "run",
-            "--keep",
-            "test-sandbox",
-            "echo",
-            "test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["run", "--keep", "test-sandbox", "echo", "test"],
+    )?;
 
     assert!(output.status.success(), "Creating sandbox should succeed");
 
@@ -284,7 +160,7 @@ fn test_sandbox_protection() -> Result<()> {
     assert!(sandbox_dir.exists(), "Sandbox directory should exist");
 
     // Now try to run godo from within the sandbox
-    let output = Command::new(&godo_binary)
+    let output = Command::new(godo_binary())
         .current_dir(&sandbox_dir)
         .args(["--dir", godo_dir.path().to_str().unwrap(), "list"])
         .output()?;
@@ -308,10 +184,7 @@ fn test_sandbox_protection() -> Result<()> {
     );
 
     // Verify we can still run godo from outside the sandbox
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args(["--dir", godo_dir.path().to_str().unwrap(), "list"])
-        .output()?;
+    let output = run_godo(&repo_path, godo_dir.path(), &["list"])?;
 
     assert!(
         output.status.success(),
@@ -323,31 +196,19 @@ fn test_sandbox_protection() -> Result<()> {
 
 #[test]
 fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
-    let (_temp_dir, repo_path) = setup_test_repo()?;
+    let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
-    let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
 
     // Create uncommitted changes
     fs::write(repo_path.join("uncommitted.txt"), "uncommitted content")?;
-    Command::new("git")
-        .current_dir(&repo_path)
-        .args(["add", "uncommitted.txt"])
-        .output()?;
+    git(&repo_path, &["add", "uncommitted.txt"])?;
 
     // Run godo with --no-prompt flag (which should use the default behavior of continuing with changes)
-    let output = Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "--no-prompt",
-            "run",
-            "--keep",
-            "test-sandbox",
-            "echo",
-            "test",
-        ])
-        .output()?;
+    let output = run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["--no-prompt", "run", "--keep", "test-sandbox", "echo", "test"],
+    )?;
 
     if !output.status.success() {
         eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -367,16 +228,11 @@ fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
     );
 
     // Clean up
-    Command::new(&godo_binary)
-        .current_dir(&repo_path)
-        .args([
-            "--dir",
-            godo_dir.path().to_str().unwrap(),
-            "remove",
-            "--force",
-            "test-sandbox",
-        ])
-        .output()?;
+    run_godo(
+        &repo_path,
+        godo_dir.path(),
+        &["remove", "--force", "test-sandbox"],
+    )?;
 
     Ok(())
 }
