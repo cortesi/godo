@@ -1,7 +1,10 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_repo, git, run_godo as run_godo_cmd};
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 use tempfile::TempDir;
 
 /// Helper struct to manage test environments
@@ -9,56 +12,19 @@ struct TestEnv {
     _temp_dir: TempDir,
     repo_dir: PathBuf,
     godo_dir: PathBuf,
-    godo_binary: PathBuf,
 }
 
 impl TestEnv {
     /// Create a new test environment with a git repository
     fn new() -> Result<Self> {
-        let temp_dir = TempDir::new()?;
-        let repo_dir = temp_dir.path().join("test-repo");
+        let (temp_dir, repo_dir) = create_repo("test-repo")?;
         let godo_dir = temp_dir.path().join("godo");
-
-        // Create directories
-        fs::create_dir(&repo_dir)?;
-        fs::create_dir(&godo_dir)?;
-
-        // Initialize git repository
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["init"])
-            .output()?;
-
-        // Configure git user
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["config", "user.email", "test@example.com"])
-            .output()?;
-
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["config", "user.name", "Test User"])
-            .output()?;
-
-        // Create initial commit
-        fs::write(repo_dir.join("README.md"), "# Test Project")?;
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["add", "README.md"])
-            .output()?;
-
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["commit", "-m", "Initial commit"])
-            .output()?;
-
-        let godo_binary = PathBuf::from(env!("CARGO_BIN_EXE_godo"));
+        fs::create_dir_all(&godo_dir)?;
 
         Ok(Self {
             _temp_dir: temp_dir,
             repo_dir,
             godo_dir,
-            godo_binary,
         })
     }
 
@@ -70,11 +36,7 @@ impl TestEnv {
             "--no-prompt", // Always skip prompts in tests
         ];
         cmd_args.extend_from_slice(args);
-
-        Ok(Command::new(&self.godo_binary)
-            .current_dir(&self.repo_dir)
-            .args(&cmd_args)
-            .output()?)
+        run_godo_cmd(&self.repo_dir, &self.godo_dir, &cmd_args)
     }
 
     /// Create a sandbox with a command and return the output
@@ -389,32 +351,20 @@ fn test_cleanup_sandbox_removes_merged_branch_without_worktree() -> Result<()> {
 
     // Add and commit the file in the sandbox
     let sandbox_path = env.godo_dir.join("test-repo").join("test-cleanup");
-    Command::new("git")
-        .current_dir(&sandbox_path)
-        .args(["add", "file.txt"])
-        .output()?;
-    Command::new("git")
-        .current_dir(&sandbox_path)
-        .args(["commit", "-m", "Add file"])
-        .output()?;
+    git(&sandbox_path, &["add", "file.txt"])?;
+    git(&sandbox_path, &["commit", "-m", "Add file"])?;
 
     // Merge the branch back to main/master
-    Command::new("git")
-        .current_dir(&env.repo_dir)
-        .args(["merge", "godo/test-cleanup"])
-        .output()?;
+    git(&env.repo_dir, &["merge", "godo/test-cleanup"])?;
 
     // Remove just the worktree, keeping the branch
-    Command::new("git")
-        .current_dir(&env.repo_dir)
-        .args(["worktree", "remove", sandbox_path.to_str().unwrap()])
-        .output()?;
+    git(
+        &env.repo_dir,
+        &["worktree", "remove", sandbox_path.to_str().unwrap()],
+    )?;
 
     // Verify branch still exists
-    let branches_output = Command::new("git")
-        .current_dir(&env.repo_dir)
-        .args(["branch", "--list", "godo/test-cleanup"])
-        .output()?;
+    let branches_output = git(&env.repo_dir, &["branch", "--list", "godo/test-cleanup"])?;
     let branches_str = String::from_utf8_lossy(&branches_output.stdout);
     assert!(
         branches_str.contains("godo/test-cleanup"),
@@ -431,10 +381,8 @@ fn test_cleanup_sandbox_removes_merged_branch_without_worktree() -> Result<()> {
     assert!(clean_output.status.success());
 
     // Verify branch was removed
-    let branches_after_output = Command::new("git")
-        .current_dir(&env.repo_dir)
-        .args(["branch", "--list", "godo/test-cleanup"])
-        .output()?;
+    let branches_after_output =
+        git(&env.repo_dir, &["branch", "--list", "godo/test-cleanup"])?;
     let branches_after_str = String::from_utf8_lossy(&branches_after_output.stdout);
     assert!(
         !branches_after_str.contains("godo/test-cleanup"),

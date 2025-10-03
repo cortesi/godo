@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-/// Return the path to the compiled `godo` binary for integration-style tests.
+/// Path to the compiled `godo` binary for integration tests.
 pub fn godo_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_godo"))
 }
@@ -71,3 +71,4 @@ pub fn run_godo(repo_path: &Path, godo_dir: &Path, args: &[&str]) -> Result<Outp
         .with_context(|| format!("failed to run godo {}", args.join(" ")))?
     )
 }
+
