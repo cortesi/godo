@@ -69,6 +69,7 @@ Commands:
   run     Run a command in an isolated workspace
   list    Show existing sandboxes
   remove  Delete a named sandbox
+  clean   Clean up a sandbox; removes unmodified worktree and fully merged branch
   help    Print this message or the help of the given subcommand(s)
 
 Options:
