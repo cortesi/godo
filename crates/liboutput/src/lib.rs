@@ -1,3 +1,13 @@
+#![deny(missing_docs)]
+#![deny(rustdoc::missing_crate_level_docs)]
+//! Terminal output abstractions and implementations for user-facing messages and prompts.
+//!
+//! This crate provides an [`Output`] trait that abstracts over how user messages
+//! and interactive prompts are rendered. Implementations include:
+//!
+//! - [`Terminal`]: A color-capable terminal renderer for production use
+//! - [`Quiet`]: A silent implementation that suppresses output (useful for tests)
+
 use std::{
     char,
     collections::HashSet,

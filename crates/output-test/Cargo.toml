@@ -1,0 +1,16 @@
+[package]
+name = "output-test"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Test harness for liboutput presentation"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+liboutput = { workspace = true }
+clap = { workspace = true }

@@ -10,12 +10,10 @@
 mod git;
 /// High-level orchestration for sandbox lifecycle management.
 mod godo;
-/// Output channel abstractions and implementations.
-mod output;
 /// Lightweight session tracking for concurrent godo runs.
 mod session;
 
 /// Re-export of the main manager type and its error.
 pub use godo::{Godo, GodoError};
 /// Re-exports for output abstraction and concrete implementations.
-pub use output::{Output, OutputError, Quiet, Terminal};
+pub use liboutput::{Output, OutputError, Quiet, Terminal};

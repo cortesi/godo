@@ -12,9 +12,9 @@ use thiserror::Error;
 
 use crate::{
     git::{self, MergeStatus},
-    output::{Output, OutputError as OutputErr},
     session::{ReleaseOutcome, SessionManager},
 };
+use liboutput::{Output, OutputError as OutputErr};
 
 /// Custom Result type for Godo operations.
 pub type Result<T> = StdResult<T, GodoError>;
@@ -1016,10 +1016,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::{
-        output::{Output, Quiet, Result as OutputResult},
-        session::{ReleaseOutcome, SessionManager},
-    };
+    use crate::session::{ReleaseOutcome, SessionManager};
+    use liboutput::{Output, Quiet, Result as OutputResult};
     use tempfile::tempdir;
 
     struct DirGuard {
