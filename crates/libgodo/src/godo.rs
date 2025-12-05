@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::{
     git::{self, MergeStatus},
     output::{Output, OutputError as OutputErr},
+    session::{ReleaseOutcome, SessionManager},
 };
 
 /// Custom Result type for Godo operations.
@@ -146,8 +147,12 @@ impl Sandbox {
     }
 
     /// Display the sandbox status using the provided output
-    fn show(&self, output: &dyn Output) -> Result<()> {
+    fn show(&self, output: &dyn Output, connections: usize) -> Result<()> {
         let mut attributes = Vec::new();
+
+        if connections > 0 {
+            attributes.push(format!("connections: {connections}"));
+        }
 
         if self.has_branch {
             let branch_status = match self.merge_status {
@@ -155,19 +160,19 @@ impl Sandbox {
                 MergeStatus::Clean => "branch [merged]",
                 MergeStatus::Unknown => "branch [merge status unknown]",
             };
-            attributes.push(branch_status);
+            attributes.push(branch_status.to_string());
         }
 
         if self.has_worktree {
             if self.has_uncommitted_changes {
-                attributes.push("worktree [uncommitted]");
+                attributes.push("worktree [uncommitted]".to_string());
             } else {
-                attributes.push("worktree [clean]");
+                attributes.push("worktree [clean]".to_string());
             }
         }
 
         if self.is_dangling {
-            attributes.push("dangling worktree");
+            attributes.push("dangling worktree".to_string());
         }
 
         let attributes_str = if attributes.is_empty() {
@@ -271,6 +276,8 @@ pub struct Godo {
 }
 
 impl Godo {
+    /// Directory under the project root reserved for godo's internal bookkeeping.
+    const META_DIR: &'static str = ".godo-leases";
     /// Create a new [`Godo`] manager.
     ///
     /// - `godo_dir`: directory where project sandboxes are stored
@@ -395,6 +402,7 @@ impl Godo {
         validate_sandbox_name(sandbox_name)?;
 
         let sandbox_path = self.sandbox_path(sandbox_name)?;
+        let session_manager = SessionManager::new(self.project_dir()?);
 
         let existing_sandbox = self.get_sandbox(sandbox_name)?;
 
@@ -479,6 +487,9 @@ impl Godo {
         }
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+
+        // Acquire session lease to track concurrent connections.
+        let lease = session_manager.acquire(sandbox_name)?;
         let status = if command.is_empty() {
             // Interactive shell
             Command::new(&shell)
@@ -522,6 +533,15 @@ impl Godo {
             let exit_code = status.code().unwrap_or(1);
             return Err(GodoError::CommandExit { code: exit_code });
         }
+
+        let _cleanup_guard = match lease.release()? {
+            ReleaseOutcome::NotLast => {
+                self.output
+                    .message("Another godo session is still attached; skipping cleanup.")?;
+                return Ok(());
+            }
+            ReleaseOutcome::Last(guard) => guard,
+        };
 
         // Handle automatic commit if specified
         if let Some(commit_message) = commit {
@@ -730,6 +750,9 @@ impl Godo {
                 let entry = entry?;
                 if entry.file_type()?.is_dir() {
                     let dir_name = entry.file_name().to_string_lossy().to_string();
+                    if dir_name == Self::META_DIR {
+                        continue;
+                    }
                     all_names.insert(dir_name);
                 }
             }
@@ -745,6 +768,7 @@ impl Godo {
     /// List all known sandboxes for the current project with their status.
     pub fn list(&self) -> Result<()> {
         let sorted_names = self.all_sandbox_names()?;
+        let session_manager = SessionManager::new(self.project_dir()?);
 
         if sorted_names.is_empty() {
             self.output.message("No sandboxes found.")?;
@@ -755,7 +779,8 @@ impl Godo {
         for name in &sorted_names {
             match self.get_sandbox(name)? {
                 Some(status) => {
-                    status.show(&*self.output)?;
+                    let connections = session_manager.active_connections(name)?;
+                    status.show(&*self.output, connections)?;
                 }
                 None => {
                     // Skip sandboxes that don't exist
@@ -991,7 +1016,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::output::{Output, Quiet, Result as OutputResult};
+    use crate::{
+        output::{Output, Quiet, Result as OutputResult},
+        session::{ReleaseOutcome, SessionManager},
+    };
+    use tempfile::tempdir;
 
     struct DirGuard {
         original: PathBuf,
@@ -1083,6 +1112,53 @@ mod tests {
             sandbox.component_status(),
             "branch: present, worktree: present, directory: present, worktree-branch: detached"
         );
+    }
+
+    #[test]
+    fn meta_dir_is_not_listed_as_sandbox() {
+        let tmp = tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        fs::create_dir(&repo_dir).unwrap();
+        // Minimal git init so Godo::new accepts the repo
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&repo_dir)
+            .status()
+            .unwrap();
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, true).unwrap();
+
+        // Create project dir and meta dir inside it
+        let project_dir = manager.project_dir().unwrap();
+        fs::create_dir_all(project_dir.join(Godo::META_DIR)).unwrap();
+        fs::create_dir_all(project_dir.join("real-sandbox")).unwrap();
+
+        let names = manager.all_sandbox_names().unwrap();
+        assert!(names.contains(&"real-sandbox".to_string()));
+        assert!(!names.contains(&Godo::META_DIR.to_string()));
+    }
+
+    #[test]
+    fn session_manager_counts_connections() {
+        let tmp = tempdir().unwrap();
+        let manager = SessionManager::new(tmp.path().to_path_buf());
+
+        let lease1 = manager.acquire("box").unwrap();
+        let lease2 = manager.acquire("box").unwrap();
+
+        assert_eq!(manager.active_connections("box").unwrap(), 2);
+
+        drop(lease1);
+        assert_eq!(manager.active_connections("box").unwrap(), 1);
+
+        match lease2.release().unwrap() {
+            ReleaseOutcome::Last(_guard) => {}
+            _ => panic!("expected last lease"),
+        }
+
+        assert_eq!(manager.active_connections("box").unwrap(), 0);
     }
 
     #[test]

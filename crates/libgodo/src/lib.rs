@@ -12,6 +12,8 @@ mod git;
 mod godo;
 /// Output channel abstractions and implementations.
 mod output;
+/// Lightweight session tracking for concurrent godo runs.
+mod session;
 
 /// Re-export of the main manager type and its error.
 pub use godo::{Godo, GodoError};

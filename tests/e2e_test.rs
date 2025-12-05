@@ -1,10 +1,14 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_repo, git, run_godo as run_godo_cmd};
-use std::fs;
-use std::path::PathBuf;
-use std::process::Output;
+use common::{create_repo, git, godo_binary, run_godo as run_godo_cmd};
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+    thread,
+    time::Duration,
+};
 use tempfile::TempDir;
 
 /// Helper struct to manage test environments
@@ -388,6 +392,68 @@ fn test_cleanup_sandbox_removes_merged_branch_without_worktree() -> Result<()> {
         !branches_after_str.contains("godo/test-cleanup"),
         "Branch should be removed after cleanup"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_list_shows_connection_count() -> Result<()> {
+    let env = TestEnv::new()?;
+
+    let sandbox_name = "conn-sandbox";
+    let sandbox_path = env.godo_dir.join("test-repo").join(sandbox_name);
+
+    // Spawn first long-running session
+    let mut child1 = Command::new(godo_binary())
+        .current_dir(&env.repo_dir)
+        .args([
+            "--dir",
+            env.godo_dir.to_str().unwrap(),
+            "--no-prompt",
+            "run",
+            "--keep",
+            sandbox_name,
+            "sleep",
+            "3",
+        ])
+        .spawn()?;
+
+    // Wait for the sandbox to exist before starting the second session
+    for _ in 0..20 {
+        if sandbox_path.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut child2 = Command::new(godo_binary())
+        .current_dir(&env.repo_dir)
+        .args([
+            "--dir",
+            env.godo_dir.to_str().unwrap(),
+            "--no-prompt",
+            "run",
+            "--keep",
+            sandbox_name,
+            "sleep",
+            "3",
+        ])
+        .spawn()?;
+
+    thread::sleep(Duration::from_millis(200));
+
+    // While both sessions are active, list should report two connections
+    let list_output = env.run_godo(&["list"])?;
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        stdout.contains("connections: 2"),
+        "Expected list output to show two connections, got: {stdout}"
+    );
+
+    let _ = child1.wait();
+    let _ = child2.wait();
+
+    let _ = env.remove_sandbox(sandbox_name);
 
     Ok(())
 }

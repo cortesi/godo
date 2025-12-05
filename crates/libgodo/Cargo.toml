@@ -17,7 +17,8 @@ clonetree = { workspace = true }
 crossterm = { workspace = true }
 termcolor = { workspace = true }
 thiserror = { workspace = true }
+fs4 = { workspace = true }
+sysinfo = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
