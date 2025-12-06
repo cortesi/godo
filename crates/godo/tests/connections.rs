@@ -75,18 +75,19 @@ fn concurrent_sessions_update_connection_counts() {
     init_repo(&repo_dir);
 
     // Two overlapping runs in the same sandbox.
-    let mut first = spawn_run(&repo_dir, &godo_dir, "shared", 4);
+    // Use short sleep times - just enough to ensure overlap.
+    let mut first = spawn_run(&repo_dir, &godo_dir, "shared", 1);
     // Ensure the worktree exists before starting the second.
-    thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(200));
     let mut second = spawn_run(&repo_dir, &godo_dir, "shared", 2);
 
     // Both active => connections: 2
-    thread::sleep(Duration::from_millis(400));
+    thread::sleep(Duration::from_millis(200));
     let out = list_output(&repo_dir, &godo_dir);
     assert!(out.contains("shared") && out.contains("connections: 2"), "list while both running: {out}");
 
     // After the shorter run exits => connections: 1
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_millis(800));
     let out = list_output(&repo_dir, &godo_dir);
     assert!(out.contains("shared") && out.contains("connections: 1"), "list with one running: {out}");
 
