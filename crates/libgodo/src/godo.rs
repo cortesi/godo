@@ -462,16 +462,62 @@ impl Godo {
 
             self.output.message("Cloning tree to sandbox...")?;
 
-            let mut clone_options = Options::new().overwrite(true).glob("!.git/**");
+            // Clone each top-level entry from repo to sandbox, skipping .git.
+            // We do this entry-by-entry because clone_tree requires the destination
+            // not to exist, but the worktree already created the sandbox with .git.
+            for entry in fs::read_dir(&self.repo_dir)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name == ".git" {
+                    continue;
+                }
 
-            // Add user-specified excludes with "!" prefix
-            for exclude in excludes {
-                clone_options = clone_options.glob(format!("!{exclude}"));
+                // Check user excludes
+                let name_str = name.to_string_lossy();
+                if excludes.iter().any(|ex| name_str == *ex) {
+                    continue;
+                }
+
+                let src = entry.path();
+                let dest = sandbox_path.join(&name);
+
+                // Remove existing entry in sandbox (from worktree checkout)
+                if dest.exists() || dest.is_symlink() {
+                    if dest.is_dir() && !dest.is_symlink() {
+                        fs::remove_dir_all(&dest)?;
+                    } else {
+                        fs::remove_file(&dest)?;
+                    }
+                }
+
+                if src.is_dir() && !src.is_symlink() {
+                    clone_tree(&src, &dest, &Options::new()).map_err(|e| {
+                        GodoError::OperationError(format!(
+                            "Failed to clone {:?} to sandbox: {e}",
+                            name
+                        ))
+                    })?;
+                } else if src.is_symlink() {
+                    let target = fs::read_link(&src)?;
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&target, &dest)?;
+                    #[cfg(windows)]
+                    {
+                        if target.is_dir() {
+                            std::os::windows::fs::symlink_dir(&target, &dest)?;
+                        } else {
+                            std::os::windows::fs::symlink_file(&target, &dest)?;
+                        }
+                    }
+                } else {
+                    reflink_copy::reflink_or_copy(&src, &dest).map_err(|e| {
+                        GodoError::OperationError(format!(
+                            "Failed to copy {:?} to sandbox: {e}",
+                            name
+                        ))
+                    })?;
+                }
             }
-
-            clone_tree(&self.repo_dir, &sandbox_path, &clone_options).map_err(|e| {
-                GodoError::OperationError(format!("Failed to clone files to sandbox: {e}"))
-            })?;
 
             // If user chose to use clean branch, reset the sandbox to remove uncommitted changes
             if use_clean_branch {
@@ -1308,7 +1354,8 @@ mod tests {
 
         let _guard = DirGuard::change_to(&repo_dir);
 
-        let godo_dir = PathBuf::from("relative-godo");
+        // Use a godo dir outside the repo to avoid "destination inside source" errors
+        let godo_dir = temp_dir.path().join("godo-outside");
         let output: Arc<dyn Output> = Arc::new(Quiet);
         let godo = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
 
