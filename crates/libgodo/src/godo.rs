@@ -639,7 +639,6 @@ impl Godo {
 
             if is_clean {
                 self.remove_sandbox(sandbox_name)?;
-                self.output.success("Sandbox removed (no changes)")?;
                 return Ok(());
             }
         }
@@ -715,10 +714,7 @@ impl Godo {
                                 // User cancelled, continue the loop to show prompt again
                                 continue;
                             }
-                            self.output
-                                .message("Discarding all changes and removing sandbox...")?;
                             self.remove_sandbox(sandbox_name)?;
-                            self.output.success("Sandbox and branch removed")?;
                             break; // Exit the loop after discard
                         }
                         PostRunAction::Branch => {
@@ -961,7 +957,6 @@ impl Godo {
             }
         }
 
-        self.output.message(&format!("Removing {name}"))?;
         self.remove_sandbox(name)
     }
 
@@ -1102,21 +1097,35 @@ impl Godo {
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
 
-        if status.has_worktree {
-            git::remove_worktree(&self.repo_dir, &sandbox_path, true)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
-        }
-        if sandbox_path.exists() {
-            fs::remove_dir_all(&sandbox_path).map_err(|e| {
-                GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
-            })?;
-        }
-        if status.has_branch {
-            git::delete_branch(&self.repo_dir, &branch, true)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
-        }
+        let spinner = self.output.spinner("Removing sandbox...");
 
-        Ok(())
+        let result: std::result::Result<(), GodoError> = (|| {
+            if status.has_worktree {
+                git::remove_worktree(&self.repo_dir, &sandbox_path, true)
+                    .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+            }
+            if sandbox_path.exists() {
+                fs::remove_dir_all(&sandbox_path).map_err(|e| {
+                    GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
+                })?;
+            }
+            if status.has_branch {
+                git::delete_branch(&self.repo_dir, &branch, true)
+                    .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                spinner.finish_success("Sandbox removed");
+                Ok(())
+            }
+            Err(e) => {
+                spinner.finish_fail("Failed to remove sandbox");
+                Err(e)
+            }
+        }
     }
 }
 
