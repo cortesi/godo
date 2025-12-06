@@ -161,6 +161,15 @@ impl Sandbox {
         // Always use section for consistent visual hierarchy (bold name)
         let section = output.section(&self.name);
 
+        // Show the branch name
+        if let Some(branch) = &self.worktree_branch {
+            section.item("branch", branch)?;
+        } else if self.worktree_detached {
+            section.item("branch", "(detached HEAD)")?;
+        } else if self.has_branch {
+            section.item("branch", &format!("godo/{}", self.name))?;
+        }
+
         if connections > 0 {
             let label = if connections == 1 {
                 "1 active connection".to_string()
@@ -367,8 +376,8 @@ impl Godo {
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
 
         let branch = branch_name(sandbox_name);
-        let merge_status = git::branch_merge_status(&self.repo_dir, &branch)
-            .unwrap_or(MergeStatus::Unknown);
+        let merge_status =
+            git::branch_merge_status(&self.repo_dir, &branch).unwrap_or(MergeStatus::Unknown);
         let has_unmerged = matches!(merge_status, MergeStatus::Diverged);
 
         // Build prompt message
@@ -788,8 +797,8 @@ impl Godo {
 
         // Determine merge status relative to integration target (only if branch exists)
         let (merge_status, unmerged_commits) = if has_branch {
-            let status =
-                git::branch_merge_status(&self.repo_dir, &branch_name).unwrap_or(MergeStatus::Unknown);
+            let status = git::branch_merge_status(&self.repo_dir, &branch_name)
+                .unwrap_or(MergeStatus::Unknown);
             let commits = if matches!(status, MergeStatus::Diverged) {
                 git::unmerged_commits(&self.repo_dir, &branch_name).unwrap_or_default()
             } else {
@@ -1253,7 +1262,7 @@ mod tests {
 
         let godo_dir = tmp.path().join("godo");
         let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
 
         // Create project dir and meta dir inside it
         let project_dir = manager.project_dir().unwrap();
@@ -1488,11 +1497,26 @@ mod tests {
             Ok(())
         }
 
-        fn diff_stat(&self, _label: &str, _insertions: usize, _deletions: usize) -> OutputResult<()> {
+        fn item(&self, _key: &str, _value: &str) -> OutputResult<()> {
             Ok(())
         }
 
-        fn commit(&self, _hash: &str, _subject: &str, _insertions: usize, _deletions: usize) -> OutputResult<()> {
+        fn diff_stat(
+            &self,
+            _label: &str,
+            _insertions: usize,
+            _deletions: usize,
+        ) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn commit(
+            &self,
+            _hash: &str,
+            _subject: &str,
+            _insertions: usize,
+            _deletions: usize,
+        ) -> OutputResult<()> {
             Ok(())
         }
 

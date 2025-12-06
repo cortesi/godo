@@ -113,6 +113,9 @@ pub trait Output: Send + Sync {
     fn warn(&self, msg: &str) -> Result<()>;
     /// Print an error/failure message (something went wrong).
     fn fail(&self, msg: &str) -> Result<()>;
+    /// Print a key-value item where key is a label and value is content.
+    /// The key is styled as a heading (dimmed) and the value as content.
+    fn item(&self, key: &str, value: &str) -> Result<()>;
     /// Print a diff stat line with colored +insertions/-deletions.
     fn diff_stat(&self, label: &str, insertions: usize, deletions: usize) -> Result<()>;
     /// Print a commit line: hash subject +ins/-del
@@ -162,11 +165,21 @@ impl Output for Quiet {
         Ok(())
     }
 
+    fn item(&self, _key: &str, _value: &str) -> Result<()> {
+        Ok(())
+    }
+
     fn diff_stat(&self, _label: &str, _insertions: usize, _deletions: usize) -> Result<()> {
         Ok(())
     }
 
-    fn commit(&self, _hash: &str, _subject: &str, _insertions: usize, _deletions: usize) -> Result<()> {
+    fn commit(
+        &self,
+        _hash: &str,
+        _subject: &str,
+        _insertions: usize,
+        _deletions: usize,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -445,6 +458,27 @@ impl Output for Terminal {
         self.write_message(msg, Some(Color::Red), false)
     }
 
+    fn item(&self, key: &str, value: &str) -> Result<()> {
+        let mut stdout = StandardStream::stdout(self.color_choice);
+
+        // Write prefix if we're in a section
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.line_prefix)?;
+            stdout.reset()?;
+        }
+
+        // Write key dimmed
+        stdout.set_color(ColorSpec::new().set_dimmed(true))?;
+        write!(stdout, "{}: ", key)?;
+        stdout.reset()?;
+
+        // Write value in normal style
+        writeln!(stdout, "{}", value)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
     fn diff_stat(&self, label: &str, insertions: usize, deletions: usize) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
 
@@ -455,8 +489,10 @@ impl Output for Terminal {
             stdout.reset()?;
         }
 
-        // Write the label
+        // Write the label dimmed (consistent with item)
+        stdout.set_color(ColorSpec::new().set_dimmed(true))?;
         write!(stdout, "{} ", label)?;
+        stdout.reset()?;
 
         // Write insertions in green
         stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
