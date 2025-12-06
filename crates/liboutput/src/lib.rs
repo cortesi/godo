@@ -22,8 +22,21 @@ use crossterm::{
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
-/// Indentation level (in spaces) used for nested output sections.
-const INDENT: usize = 4;
+/// Default terminal width when detection fails.
+const DEFAULT_WIDTH: usize = 80;
+
+/// Minimum width before we disable wrapping entirely.
+const MIN_WRAP_WIDTH: usize = 40;
+
+/// Box-drawing characters for section structure.
+mod chars {
+    /// Vertical line for continuing structure.
+    pub const VLINE: &str = "|";
+    /// Tee for items in a section.
+    pub const TEE: &str = "+";
+    /// Horizontal line after tee.
+    pub const HLINE: &str = "-";
+}
 
 /// ASCII control representation of `Ctrl+C`.
 const CTRL_C: char = '\u{3}';
@@ -46,6 +59,13 @@ fn is_cancel_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
         KeyCode::Esc => true,
         _ => false,
     }
+}
+
+/// Get the current terminal width, falling back to a default.
+fn term_width() -> usize {
+    terminal::size()
+        .map(|(cols, _)| cols as usize)
+        .unwrap_or(DEFAULT_WIDTH)
 }
 
 /// Errors produced by [`Output`] implementations when interacting with the user
@@ -81,13 +101,13 @@ pub type Result<T> = StdResult<T, OutputError>;
 /// Implementations can render to a terminal, suppress output, or emit to other
 /// formats (e.g. files or JSON) in the future.
 pub trait Output: Send + Sync {
-    /// Print an informational message.
+    /// Print an informational message (neutral, for status updates).
     fn message(&self, msg: &str) -> Result<()>;
-    /// Print a success message.
+    /// Print a success message (positive outcome).
     fn success(&self, msg: &str) -> Result<()>;
-    /// Print a warning message.
+    /// Print a warning message (attention needed but not an error).
     fn warn(&self, msg: &str) -> Result<()>;
-    /// Print an error/failure message.
+    /// Print an error/failure message (something went wrong).
     fn fail(&self, msg: &str) -> Result<()>;
     /// Ask the user to confirm an action; returns `true` if confirmed.
     fn confirm(&self, prompt: &str) -> Result<bool>;
@@ -95,7 +115,7 @@ pub trait Output: Send + Sync {
     fn select(&self, prompt: &str, options: Vec<String>) -> Result<usize>;
     /// Flush any buffered output.
     fn finish(&self) -> Result<()>;
-    /// Create a nested output section that indents subsequent messages.
+    /// Create a nested output section with a header.
     fn section(&self, header: &str) -> Box<dyn Output>;
 }
 
@@ -145,8 +165,10 @@ impl Output for Quiet {
 pub struct Terminal {
     /// Whether to emit ANSI color sequences when writing to stdout.
     color_choice: ColorChoice,
-    /// Current indentation depth in spaces.
-    indent: usize,
+    /// The prefix string for this section level (tree characters).
+    line_prefix: String,
+    /// Whether this is the root level (affects prefix rendering).
+    is_root: bool,
 }
 
 impl Terminal {
@@ -162,16 +184,91 @@ impl Terminal {
         };
         Self {
             color_choice,
-            indent: 0,
+            line_prefix: String::new(),
+            is_root: true,
         }
     }
 
-    /// Write `msg` using `color` while honoring the current indentation level.
-    fn write_colored(&self, msg: &str, color: Color) -> Result<()> {
+    /// Calculate available width for text after accounting for prefix.
+    fn available_width(&self) -> usize {
+        let prefix_width = self.line_prefix.chars().count();
+        let total = term_width();
+        if total > prefix_width + MIN_WRAP_WIDTH {
+            total - prefix_width
+        } else {
+            total // Don't wrap if too narrow
+        }
+    }
+
+    /// Wrap text to fit terminal width, respecting the current prefix.
+    fn wrap_text(&self, text: &str) -> Vec<String> {
+        let width = self.available_width();
+        if width < MIN_WRAP_WIDTH {
+            // Terminal too narrow, don't wrap
+            return vec![text.to_string()];
+        }
+
+        textwrap::wrap(text, width)
+            .into_iter()
+            .map(|cow| cow.into_owned())
+            .collect()
+    }
+
+    /// Write a line with the current prefix.
+    fn write_prefixed_line(
+        &self,
+        stdout: &mut StandardStream,
+        line: &str,
+        is_first: bool,
+    ) -> Result<()> {
+        if !self.line_prefix.is_empty() {
+            // For continuation lines within the same message, use the same prefix
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            if is_first {
+                write!(stdout, "{}", self.line_prefix)?;
+            } else {
+                // Continuation lines get the vertical bar prefix
+                let cont_prefix = self.continuation_prefix();
+                write!(stdout, "{}", cont_prefix)?;
+            }
+            stdout.reset()?;
+        }
+        write!(stdout, "{}", line)?;
+        Ok(())
+    }
+
+    /// Get the prefix for continuation lines (vertical bars only).
+    fn continuation_prefix(&self) -> String {
+        // Replace tee with vertical line for continuation
+        self.line_prefix
+            .replace(chars::TEE, chars::VLINE)
+            .replace(chars::HLINE, " ")
+    }
+
+    /// Write a message with color styling.
+    fn write_message(&self, msg: &str, color: Option<Color>, dim: bool) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
-        stdout.set_color(ColorSpec::new().set_fg(Some(color)))?;
-        writeln!(stdout, "{}{msg}", " ".repeat(self.indent))?;
-        stdout.reset()?;
+        let lines = self.wrap_text(msg);
+
+        for (i, line) in lines.iter().enumerate() {
+            let is_first = i == 0;
+
+            // Write the tree prefix
+            self.write_prefixed_line(&mut stdout, "", is_first)?;
+
+            // Write the message text
+            let mut spec = ColorSpec::new();
+            if let Some(c) = color {
+                spec.set_fg(Some(c));
+            }
+            if dim {
+                spec.set_dimmed(true);
+            }
+            stdout.set_color(&spec)?;
+            writeln!(stdout, "{}", line)?;
+            stdout.reset()?;
+        }
+
         stdout.flush()?;
         Ok(())
     }
@@ -227,9 +324,16 @@ impl Terminal {
     fn print_option_with_shortcut(&self, option: &str, shortcut: char) -> Result<()> {
         let mut stdout = StandardStream::stdout(self.color_choice);
 
+        // Write the tree prefix first
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.continuation_prefix())?;
+            stdout.reset()?;
+        }
+
+        write!(stdout, "  ")?;
+
         // Find the first matching character using Unicode-aware iteration.
-        // Compare case-insensitively by taking the first codepoint of to_lowercase(),
-        // mirroring how shortcuts are generated.
         let mut match_byte_idx: Option<usize> = None;
         let mut match_char: Option<char> = None;
         for (byte_idx, ch) in option.char_indices() {
@@ -247,8 +351,8 @@ impl Terminal {
                 write!(stdout, "{}", &option[..idx])?;
             }
 
-            // Highlight the matched character
-            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+            // Highlight the matched character (underlined and bold)
+            stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
             write!(stdout, "{}", ch)?;
             stdout.reset()?;
 
@@ -259,7 +363,10 @@ impl Terminal {
             }
         } else {
             // Shortcut not in option text, print shortcut in brackets
-            write!(stdout, "[{shortcut}] {option}")?;
+            stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
+            write!(stdout, "{}", shortcut)?;
+            stdout.reset()?;
+            write!(stdout, " {}", option)?;
         }
 
         writeln!(stdout)?;
@@ -270,19 +377,20 @@ impl Terminal {
 
 impl Output for Terminal {
     fn message(&self, msg: &str) -> Result<()> {
-        self.write_colored(msg, Color::Cyan)
+        // Neutral informational message - dimmed to reduce visual noise
+        self.write_message(msg, None, true)
     }
 
     fn success(&self, msg: &str) -> Result<()> {
-        self.write_colored(msg, Color::Green)
+        self.write_message(msg, Some(Color::Green), false)
     }
 
     fn warn(&self, msg: &str) -> Result<()> {
-        self.write_colored(msg, Color::Rgb(255, 165, 0)) // Orange
+        self.write_message(msg, Some(Color::Yellow), false)
     }
 
     fn fail(&self, msg: &str) -> Result<()> {
-        self.write_colored(msg, Color::Red)
+        self.write_message(msg, Some(Color::Red), false)
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
@@ -298,20 +406,32 @@ impl Output for Terminal {
             ));
         }
 
+        let mut stdout = StandardStream::stdout(self.color_choice);
+
         // Generate shortcuts for each option
         let shortcuts = self.generate_shortcuts(&options);
 
-        // Print the prompt
-        println!("{}{prompt}", " ".repeat(self.indent));
+        // Print the prompt with prefix
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.line_prefix)?;
+            stdout.reset()?;
+        }
+        writeln!(stdout, "{}", prompt)?;
 
         // Print options with shortcuts highlighted
         for (option, shortcut) in options.iter().zip(shortcuts.iter()) {
-            print!("{}  ", " ".repeat(self.indent));
             self.print_option_with_shortcut(option, *shortcut)?;
         }
 
-        print!("{} > ", " ".repeat(self.indent));
-        io::stdout().flush()?;
+        // Print input prompt
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.continuation_prefix())?;
+            stdout.reset()?;
+        }
+        write!(stdout, "> ")?;
+        stdout.flush()?;
 
         // Enable raw mode to read single key press
         terminal::enable_raw_mode().map_err(|e| OutputError::Terminal(e.to_string()))?;
@@ -339,7 +459,6 @@ impl Output for Terminal {
 
                         // Check if input matches any shortcut
                         if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {
-                            // Return the index and character to print after restoring terminal
                             return Ok((index, Some(ch_lower)));
                         }
                     }
@@ -371,14 +490,40 @@ impl Output for Terminal {
     }
 
     fn section(&self, header: &str) -> Box<dyn Output> {
-        // Print the section header at current indent
-        self.message(header)
-            .expect("section header message should succeed");
+        let mut stdout = StandardStream::stdout(self.color_choice);
 
-        // Return a new Terminal with increased indent
+        // Print section header with current prefix
+        if !self.line_prefix.is_empty() {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))));
+            let _ = write!(stdout, "{}", self.line_prefix);
+            let _ = stdout.reset();
+        }
+
+        // Section header in bold
+        let _ = stdout.set_color(ColorSpec::new().set_bold(true));
+        let _ = writeln!(stdout, "{}", header);
+        let _ = stdout.reset();
+        let _ = stdout.flush();
+
+        // Build the new prefix for children
+        let new_prefix = if self.is_root {
+            // First level children get a simple tree start
+            format!("{}{} ", chars::TEE, chars::HLINE)
+        } else {
+            // Deeper children extend the existing prefix
+            format!(
+                "{}{}{}{}",
+                self.continuation_prefix(),
+                chars::TEE,
+                chars::HLINE,
+                " "
+            )
+        };
+
         Box::new(Self {
             color_choice: self.color_choice,
-            indent: self.indent + INDENT,
+            line_prefix: new_prefix,
+            is_root: false,
         })
     }
 }
@@ -474,13 +619,10 @@ mod tests {
     }
 
     #[test]
-    fn test_section_creates_indented_output() {
+    fn test_section_creates_nested_output() {
         let terminal = Terminal::new(false);
-        assert_eq!(terminal.indent, 0);
 
         let section1 = terminal.section("Section 1");
-        // Can't directly test indent since it's private, but we can test behavior
-        // by checking that section returns a valid Output implementation
         section1
             .message("Test message")
             .expect("section message succeeds");
@@ -490,5 +632,14 @@ mod tests {
         section2
             .message("Nested message")
             .expect("nested section message succeeds");
+    }
+
+    #[test]
+    fn test_wrap_text() {
+        let terminal = Terminal::new(false);
+        // With default width, short text shouldn't wrap
+        let lines = terminal.wrap_text("short");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "short");
     }
 }

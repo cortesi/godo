@@ -29,6 +29,10 @@ enum Commands {
     Confirm,
     /// Test nested sections
     Sections,
+    /// Simulate a realistic godo workflow
+    Workflow,
+    /// Test text wrapping with long messages
+    Wrap,
     /// Run all demos
     All,
 }
@@ -36,10 +40,30 @@ enum Commands {
 /// Demonstrate all message types.
 fn demo_messages(output: &dyn Output) {
     println!("\n=== Message Types ===\n");
-    output.message("This is an informational message").unwrap();
-    output.success("This is a success message").unwrap();
-    output.warn("This is a warning message").unwrap();
-    output.fail("This is a failure/error message").unwrap();
+    output.message("Status update: checking prerequisites").unwrap();
+    output.message("Cloning repository to sandbox...").unwrap();
+    output.success("Sandbox created successfully").unwrap();
+    output.warn("Branch has diverged from main").unwrap();
+    output.fail("Could not connect to remote").unwrap();
+}
+
+/// Demonstrate text wrapping.
+fn demo_wrap(output: &dyn Output) {
+    println!("\n=== Text Wrapping ===\n");
+    output.message("This is a short message.").unwrap();
+    output.message(
+        "This is a much longer message that should wrap to multiple lines when \
+         the terminal is narrow enough. It contains enough text to demonstrate \
+         how the wrapping behaves with the current terminal width."
+    ).unwrap();
+    output.success(
+        "Operation completed successfully after processing all 47 files in the \
+         repository and validating the configuration against the schema."
+    ).unwrap();
+    output.warn(
+        "The configuration file contains deprecated options that will be removed \
+         in a future version. Please update your configuration to use the new format."
+    ).unwrap();
 }
 
 /// Demonstrate the selection prompt.
@@ -61,33 +85,14 @@ fn demo_select(output: &dyn Output) {
     }
 }
 
-/// Demonstrate conflicting shortcuts in selection.
-fn demo_select_conflicts(output: &dyn Output) {
-    println!("\n=== Selection with Conflicting Shortcuts ===\n");
-
-    let options = vec![
-        "Apple".to_string(),
-        "Apricot".to_string(),
-        "Avocado".to_string(),
-        "Banana".to_string(),
-    ];
-
-    match output.select("Pick a fruit (note: all start with 'A' except Banana):", options) {
-        Ok(idx) => output
-            .success(&format!("You selected option {}", idx + 1))
-            .unwrap(),
-        Err(e) => output.warn(&format!("Selection cancelled: {}", e)).unwrap(),
-    }
-}
-
 /// Demonstrate the confirmation prompt.
 fn demo_confirm(output: &dyn Output) {
     println!("\n=== Confirmation Prompt ===\n");
 
     match output.confirm("Are you sure you want to proceed?") {
-        Ok(true) => output.success("You confirmed the action").unwrap(),
-        Ok(false) => output.message("You declined the action").unwrap(),
-        Err(e) => output.warn(&format!("Confirmation cancelled: {}", e)).unwrap(),
+        Ok(true) => output.success("Confirmed").unwrap(),
+        Ok(false) => output.message("Declined").unwrap(),
+        Err(e) => output.warn(&format!("Cancelled: {}", e)).unwrap(),
     }
 }
 
@@ -95,31 +100,66 @@ fn demo_confirm(output: &dyn Output) {
 fn demo_sections(output: &dyn Output) {
     println!("\n=== Nested Sections ===\n");
 
-    output.message("Top-level message").unwrap();
+    output.message("Starting operation").unwrap();
 
-    let section1 = output.section("Section 1: Setup");
-    section1.message("Checking prerequisites...").unwrap();
-    section1.success("All prerequisites met").unwrap();
+    let section1 = output.section("Phase 1: Setup");
+    section1.message("Checking prerequisites").unwrap();
+    section1.message("Validating configuration").unwrap();
+    section1.success("Setup complete").unwrap();
 
-    let subsection = section1.section("Subsection 1.1: Details");
-    subsection.message("Running detailed checks").unwrap();
-    subsection.warn("Minor issue detected").unwrap();
-    subsection.success("Issue resolved").unwrap();
+    let section2 = output.section("Phase 2: Execution");
+    section2.message("Processing files").unwrap();
 
-    let section2 = output.section("Section 2: Execution");
-    section2.message("Running main operation...").unwrap();
-    section2.success("Operation completed successfully").unwrap();
+    let subsection = section2.section("Batch 1");
+    subsection.message("Processing file1.rs").unwrap();
+    subsection.message("Processing file2.rs").unwrap();
+    subsection.warn("file3.rs has warnings").unwrap();
+    subsection.success("Batch complete").unwrap();
 
-    output.success("All sections complete").unwrap();
+    section2.success("All batches processed").unwrap();
+
+    output.success("Operation finished").unwrap();
+}
+
+/// Simulate a realistic godo workflow.
+fn demo_workflow(output: &dyn Output) {
+    println!("\n=== Simulated Godo Workflow ===\n");
+
+    // Simulating: godo run feature-xyz
+    output
+        .message("Creating sandbox feature-xyz with branch godo/feature-xyz")
+        .unwrap();
+    output.message("Cloning tree to sandbox...").unwrap();
+    output.success("Sandbox ready").unwrap();
+
+    // Simulate some work happening...
+    println!();
+    output.message("Running command in sandbox...").unwrap();
+    println!("  $ cargo test");
+    println!("  running 42 tests");
+    println!("  test result: ok. 42 passed");
+    println!();
+
+    // Simulating cleanup with sections
+    let cleanup = output.section("Cleaning up sandbox: feature-xyz");
+    cleanup.message("Checking for uncommitted changes").unwrap();
+    cleanup.warn("You have uncommitted changes").unwrap();
+
+    // Would normally prompt here
+    cleanup.message("Staging and committing changes...").unwrap();
+    cleanup.success("Committed with message: WIP").unwrap();
+    cleanup.message("Removing worktree").unwrap();
+    cleanup.success("Sandbox cleaned up, branch godo/feature-xyz kept").unwrap();
 }
 
 /// Run all demos in sequence.
 fn demo_all(output: &dyn Output) {
     demo_messages(output);
+    demo_wrap(output);
     demo_sections(output);
-    demo_select(output);
-    demo_select_conflicts(output);
-    demo_confirm(output);
+    demo_workflow(output);
+    // Skip interactive demos in "all" mode
+    println!("\n(Skipping interactive demos: select, confirm)\n");
 }
 
 fn main() {
@@ -131,23 +171,13 @@ fn main() {
         Some(Commands::Select) => demo_select(&output),
         Some(Commands::Confirm) => demo_confirm(&output),
         Some(Commands::Sections) => demo_sections(&output),
+        Some(Commands::Workflow) => demo_workflow(&output),
+        Some(Commands::Wrap) => demo_wrap(&output),
         Some(Commands::All) => demo_all(&output),
         None => {
-            // Default: show a brief overview
             println!("output-test: Test harness for liboutput\n");
-            println!("Usage: output-test <COMMAND>\n");
-            println!("Commands:");
-            println!("  messages   Show all message types");
-            println!("  select     Test the selection prompt");
-            println!("  confirm    Test the confirmation prompt");
-            println!("  sections   Test nested sections");
-            println!("  all        Run all demos\n");
-            println!("Options:");
-            println!("  --no-color Disable colors in output");
-            println!("  --help     Print help\n");
-
-            // Quick preview of message types
-            println!("Quick preview of message types:\n");
+            println!("Run with --help for usage information.\n");
+            // Quick preview
             demo_messages(&output);
         }
     }

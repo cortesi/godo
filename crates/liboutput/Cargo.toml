@@ -13,4 +13,5 @@ workspace = true
 [dependencies]
 crossterm = { workspace = true }
 termcolor = { workspace = true }
+textwrap = { workspace = true }
 thiserror = { workspace = true }
