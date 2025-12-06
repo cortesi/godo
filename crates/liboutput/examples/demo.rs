@@ -2,13 +2,15 @@
 //!
 //! This tool provides a way to visually test and iterate on output formatting
 //! without running the full godo application.
+//!
+//! Run with: `cargo run --example demo -- <command>`
 
 use clap::{Parser, Subcommand};
 use liboutput::{Output, Terminal};
 
 /// Test harness for liboutput presentation
 #[derive(Parser)]
-#[command(name = "output-test")]
+#[command(name = "demo")]
 #[command(about = "Exercise liboutput presentation features")]
 struct Cli {
     /// Disable colors in output
@@ -54,16 +56,21 @@ fn demo_wrap(output: &dyn Output) {
     output.message(
         "This is a much longer message that should wrap to multiple lines when \
          the terminal is narrow enough. It contains enough text to demonstrate \
-         how the wrapping behaves with the current terminal width."
-    ).unwrap();
-    output.success(
-        "Operation completed successfully after processing all 47 files in the \
-         repository and validating the configuration against the schema."
-    ).unwrap();
-    output.warn(
-        "The configuration file contains deprecated options that will be removed \
-         in a future version. Please update your configuration to use the new format."
-    ).unwrap();
+         how the wrapping behaves with the current terminal width.",
+    )
+    .unwrap();
+    output
+        .success(
+            "Operation completed successfully after processing all 47 files in the \
+         repository and validating the configuration against the schema.",
+        )
+        .unwrap();
+    output
+        .warn(
+            "The configuration file contains deprecated options that will be removed \
+         in a future version. Please update your configuration to use the new format.",
+        )
+        .unwrap();
 }
 
 /// Demonstrate the selection prompt.
@@ -149,7 +156,9 @@ fn demo_workflow(output: &dyn Output) {
     cleanup.message("Staging and committing changes...").unwrap();
     cleanup.success("Committed with message: WIP").unwrap();
     cleanup.message("Removing worktree").unwrap();
-    cleanup.success("Sandbox cleaned up, branch godo/feature-xyz kept").unwrap();
+    cleanup
+        .success("Sandbox cleaned up, branch godo/feature-xyz kept")
+        .unwrap();
 }
 
 /// Run all demos in sequence.
@@ -175,7 +184,7 @@ fn main() {
         Some(Commands::Wrap) => demo_wrap(&output),
         Some(Commands::All) => demo_all(&output),
         None => {
-            println!("output-test: Test harness for liboutput\n");
+            println!("demo: Test harness for liboutput\n");
             println!("Run with --help for usage information.\n");
             // Quick preview
             demo_messages(&output);
