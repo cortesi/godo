@@ -60,6 +60,7 @@ pub enum GodoError {
 }
 
 /// Follow-up action to take after executing a sandboxed command.
+#[derive(Clone)]
 enum PostRunAction {
     /// Commit all tracked changes within the sandbox.
     Commit,
@@ -95,6 +96,8 @@ struct Sandbox {
     diff_stats: Option<git::DiffStats>,
     /// Merge relationship between the sandbox branch and its integration target
     merge_status: MergeStatus,
+    /// Commits not yet merged into the integration target
+    unmerged_commits: Vec<git::CommitInfo>,
     /// Whether the worktree is dangling (no backing directory)
     is_dangling: bool,
 }
@@ -167,7 +170,14 @@ impl Sandbox {
             section.message(&label)?;
         }
         if has_unmerged {
-            section.warn("unmerged commits")?;
+            for commit in &self.unmerged_commits {
+                section.commit(
+                    &commit.short_hash,
+                    &commit.subject,
+                    commit.insertions,
+                    commit.deletions,
+                )?;
+            }
         }
         if has_uncommitted {
             if let Some(stats) = &self.diff_stats {
@@ -351,33 +361,54 @@ impl Godo {
     }
 
     /// Prompt the user for what to do after command execution
-    fn prompt_for_action(&self, sandbox_path: &Path) -> Result<PostRunAction> {
-        // Check if there are uncommitted changes
-        let has_changes = git::has_uncommitted_changes(sandbox_path)
+    fn prompt_for_action(&self, sandbox_path: &Path, sandbox_name: &str) -> Result<PostRunAction> {
+        // Check current state
+        let has_uncommitted = git::has_uncommitted_changes(sandbox_path)
             .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
 
-        let prompt = if has_changes {
-            "Command completed. You have uncommitted changes. What would you like to do?"
-        } else {
-            "Command completed. What would you like to do?"
+        let branch = branch_name(sandbox_name);
+        let merge_status = git::branch_merge_status(&self.repo_dir, &branch)
+            .unwrap_or(MergeStatus::Unknown);
+        let has_unmerged = matches!(merge_status, MergeStatus::Diverged);
+
+        // Build prompt message
+        let prompt = match (has_uncommitted, has_unmerged) {
+            (true, true) => "You have uncommitted changes and unmerged commits.",
+            (true, false) => "You have uncommitted changes.",
+            (false, true) => "You have unmerged commits.",
+            (false, false) => "Command completed.",
         };
 
-        let options = vec![
-            "commit - stage all changes and commit".to_string(),
-            "shell - run a shell in the sandbox".to_string(),
-            "keep - keep the sandbox and exit".to_string(),
-            "discard - discard all changes and delete".to_string(),
-            "branch - keep the branch but discard the worktree".to_string(),
-        ];
+        // Build options based on state - only show relevant actions
+        let mut options = Vec::new();
+        let mut actions = Vec::new();
 
-        match self.prompt_select(prompt, options)? {
-            0 => Ok(PostRunAction::Commit),
-            1 => Ok(PostRunAction::Shell),
-            2 => Ok(PostRunAction::Keep),
-            3 => Ok(PostRunAction::Discard),
-            4 => Ok(PostRunAction::Branch),
-            _ => unreachable!("Invalid selection"),
+        // Commit only makes sense if there are uncommitted changes
+        if has_uncommitted {
+            options.push("commit - stage all changes and commit".to_string());
+            actions.push(PostRunAction::Commit);
         }
+
+        // Shell is always available
+        options.push("shell - open a shell in the sandbox".to_string());
+        actions.push(PostRunAction::Shell);
+
+        // Keep is always available
+        options.push("keep - keep the sandbox".to_string());
+        actions.push(PostRunAction::Keep);
+
+        // Discard is always available (discards everything)
+        options.push("discard - delete sandbox and branch".to_string());
+        actions.push(PostRunAction::Discard);
+
+        // Branch only makes sense if there are unmerged commits worth keeping
+        if has_unmerged {
+            options.push("branch - keep branch, delete worktree".to_string());
+            actions.push(PostRunAction::Branch);
+        }
+
+        let selection = self.prompt_select(prompt, options)?;
+        Ok(actions[selection].clone())
     }
 
     /// Create or reuse a sandbox and run a command or interactive shell in it.
@@ -598,6 +629,21 @@ impl Godo {
             ReleaseOutcome::Last(guard) => guard,
         };
 
+        // Check if sandbox is clean (no uncommitted changes, no unmerged commits)
+        // If so, auto-delete without prompting
+        if !keep && commit.is_none() {
+            let has_uncommitted = git::has_uncommitted_changes(&sandbox_path).unwrap_or(false);
+            let merge_status = git::branch_merge_status(&self.repo_dir, &branch_name(sandbox_name))
+                .unwrap_or(MergeStatus::Unknown);
+            let is_clean = !has_uncommitted && matches!(merge_status, MergeStatus::Clean);
+
+            if is_clean {
+                self.remove_sandbox(sandbox_name)?;
+                self.output.success("Sandbox removed (no changes)")?;
+                return Ok(());
+            }
+        }
+
         // Handle automatic commit if specified
         if let Some(commit_message) = commit {
             self.output.message("Staging and committing changes...")?;
@@ -621,7 +667,7 @@ impl Godo {
             } else {
                 // Prompt user for action if not explicitly keeping or committing
                 loop {
-                    let action = self.prompt_for_action(&sandbox_path)?;
+                    let action = self.prompt_for_action(&sandbox_path, sandbox_name)?;
                     match action {
                         PostRunAction::Commit => {
                             self.output.message("Staging and committing changes...")?;
@@ -745,10 +791,17 @@ impl Godo {
         }
 
         // Determine merge status relative to integration target (only if branch exists)
-        let merge_status = if has_branch {
-            git::branch_merge_status(&self.repo_dir, &branch_name).unwrap_or(MergeStatus::Unknown)
+        let (merge_status, unmerged_commits) = if has_branch {
+            let status =
+                git::branch_merge_status(&self.repo_dir, &branch_name).unwrap_or(MergeStatus::Unknown);
+            let commits = if matches!(status, MergeStatus::Diverged) {
+                git::unmerged_commits(&self.repo_dir, &branch_name).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            (status, commits)
         } else {
-            MergeStatus::Unknown
+            (MergeStatus::Unknown, Vec::new())
         };
 
         // Check if dangling (directory exists but no branch)
@@ -778,6 +831,7 @@ impl Godo {
             has_uncommitted_changes,
             diff_stats,
             merge_status,
+            unmerged_commits,
             is_dangling,
         }))
     }
@@ -1166,6 +1220,7 @@ mod tests {
             has_uncommitted_changes: false,
             diff_stats: None,
             merge_status: MergeStatus::Unknown,
+            unmerged_commits: Vec::new(),
             is_dangling: false,
         };
 
@@ -1428,6 +1483,10 @@ mod tests {
             Ok(())
         }
 
+        fn commit(&self, _hash: &str, _subject: &str, _insertions: usize, _deletions: usize) -> OutputResult<()> {
+            Ok(())
+        }
+
         fn confirm(&self, _prompt: &str) -> OutputResult<bool> {
             Ok(true)
         }
@@ -1459,42 +1518,71 @@ mod tests {
         let godo_dir = temp_dir.path().join(".godo");
         let repo_dir = temp_dir.path().join("repo");
 
-        // Initialize a git repository
+        // Initialize a git repository with an initial commit
         fs::create_dir_all(&repo_dir).unwrap();
         Command::new("git")
             .current_dir(&repo_dir)
             .args(["init"])
             .output()
             .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        fs::write(repo_dir.join("README.md"), "test").unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
 
-        // Test selecting "Commit"
+        // For a clean sandbox (no uncommitted, no unmerged), options are:
+        // 0: shell, 1: keep, 2: discard
+        // (no commit option since nothing to commit, no branch option since nothing unmerged)
+
+        // Test selecting "Shell" (index 0 for clean sandbox)
         let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 0 });
         let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir).unwrap();
-        assert!(matches!(action, PostRunAction::Commit));
-
-        // Test selecting "Shell"
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
         assert!(matches!(action, PostRunAction::Shell));
 
-        // Test selecting "Keep"
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 2 });
+        // Test selecting "Keep" (index 1 for clean sandbox)
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
         let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
         assert!(matches!(action, PostRunAction::Keep));
 
-        // Test selecting "Discard"
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 3 });
+        // Test selecting "Discard" (index 2 for clean sandbox)
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 2 });
         let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir).unwrap();
+        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
         assert!(matches!(action, PostRunAction::Discard));
 
-        // Test selecting "Branch"
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 4 });
+        // Now test with uncommitted changes - options become:
+        // 0: commit, 1: shell, 2: keep, 3: discard
+        fs::write(repo_dir.join("new_file.txt"), "changes").unwrap();
+
+        // Test selecting "Commit" (index 0 with uncommitted changes)
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 0 });
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
+        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
+        assert!(matches!(action, PostRunAction::Commit));
+
+        // Test selecting "Shell" (index 1 with uncommitted changes)
+        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
         let godo = Godo::new(godo_dir, Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir).unwrap();
-        assert!(matches!(action, PostRunAction::Branch));
+        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
+        assert!(matches!(action, PostRunAction::Shell));
     }
 }

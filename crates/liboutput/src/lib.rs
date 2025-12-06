@@ -115,6 +115,8 @@ pub trait Output: Send + Sync {
     fn fail(&self, msg: &str) -> Result<()>;
     /// Print a diff stat line with colored +insertions/-deletions.
     fn diff_stat(&self, label: &str, insertions: usize, deletions: usize) -> Result<()>;
+    /// Print a commit line: hash subject +ins/-del
+    fn commit(&self, hash: &str, subject: &str, insertions: usize, deletions: usize) -> Result<()>;
     /// Ask the user to confirm an action; returns `true` if confirmed.
     fn confirm(&self, prompt: &str) -> Result<bool>;
     /// Present a list of `options` and return the chosen index.
@@ -161,6 +163,10 @@ impl Output for Quiet {
     }
 
     fn diff_stat(&self, _label: &str, _insertions: usize, _deletions: usize) -> Result<()> {
+        Ok(())
+    }
+
+    fn commit(&self, _hash: &str, _subject: &str, _insertions: usize, _deletions: usize) -> Result<()> {
         Ok(())
     }
 
@@ -463,6 +469,41 @@ impl Output for Terminal {
         stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
         write!(stdout, "-{}", deletions)?;
         stdout.reset()?;
+
+        writeln!(stdout)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn commit(&self, hash: &str, subject: &str, insertions: usize, deletions: usize) -> Result<()> {
+        let mut stdout = StandardStream::stdout(self.color_choice);
+
+        // Write prefix if we're in a section
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.line_prefix)?;
+            stdout.reset()?;
+        }
+
+        // Write hash in yellow
+        stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+        write!(stdout, "{}", hash)?;
+        stdout.reset()?;
+
+        // Write subject
+        write!(stdout, " {}", subject)?;
+
+        // Write stats if non-zero
+        if insertions > 0 || deletions > 0 {
+            write!(stdout, " ")?;
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+            write!(stdout, "+{}", insertions)?;
+            stdout.reset()?;
+            write!(stdout, "/")?;
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+            write!(stdout, "-{}", deletions)?;
+            stdout.reset()?;
+        }
 
         writeln!(stdout)?;
         stdout.flush()?;

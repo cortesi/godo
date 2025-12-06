@@ -282,13 +282,22 @@ pub enum MergeStatus {
     Unknown,
 }
 
-/// Determine if a branch is ahead of its integration target.
-pub fn branch_merge_status(repo_path: &Path, branch_name: &str) -> Result<MergeStatus> {
-    // If the branch itself is missing, we cannot establish a relationship.
-    if !has_branch(repo_path, branch_name)? {
-        return Ok(MergeStatus::Unknown);
-    }
+/// A commit with its metadata and diff statistics.
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    /// Short commit hash (7 chars).
+    pub short_hash: String,
+    /// First line of commit message.
+    pub subject: String,
+    /// Lines added in this commit.
+    pub insertions: usize,
+    /// Lines removed in this commit.
+    pub deletions: usize,
+}
 
+/// Find the integration target branch for a given branch.
+/// Returns the first valid target from: local main/master, configured upstream, remote default.
+fn find_integration_target(repo_path: &Path, branch_name: &str) -> Result<Option<String>> {
     let mut candidates = Vec::new();
 
     // Prefer local main/master branches first - these represent the actual
@@ -315,30 +324,126 @@ pub fn branch_merge_status(repo_path: &Path, branch_name: &str) -> Result<MergeS
         candidates.push(default_target);
     }
 
+    // Return the first candidate that works with rev-list
     for target in candidates {
-        match run_git(
+        if run_git(
             repo_path,
             &["rev-list", "--count", &format!("{target}..{branch_name}")],
-        ) {
-            Ok(output) => {
-                let count = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .parse::<u32>()
-                    .unwrap_or(0);
-                return if count > 0 {
-                    Ok(MergeStatus::Diverged)
-                } else {
-                    Ok(MergeStatus::Clean)
-                };
+        )
+        .is_ok()
+        {
+            return Ok(Some(target));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Determine if a branch is ahead of its integration target.
+pub fn branch_merge_status(repo_path: &Path, branch_name: &str) -> Result<MergeStatus> {
+    // If the branch itself is missing, we cannot establish a relationship.
+    if !has_branch(repo_path, branch_name)? {
+        return Ok(MergeStatus::Unknown);
+    }
+
+    let Some(target) = find_integration_target(repo_path, branch_name)? else {
+        return Ok(MergeStatus::Unknown);
+    };
+
+    let output = run_git(
+        repo_path,
+        &["rev-list", "--count", &format!("{target}..{branch_name}")],
+    )?;
+
+    let count = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(0);
+
+    if count > 0 {
+        Ok(MergeStatus::Diverged)
+    } else {
+        Ok(MergeStatus::Clean)
+    }
+}
+
+/// Get the list of commits on a branch that are not on its integration target.
+pub fn unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<Vec<CommitInfo>> {
+    if !has_branch(repo_path, branch_name)? {
+        return Ok(Vec::new());
+    }
+
+    let Some(target) = find_integration_target(repo_path, branch_name)? else {
+        return Ok(Vec::new());
+    };
+
+    // Get commits with short hash and subject
+    let output = run_git(
+        repo_path,
+        &[
+            "log",
+            "--format=%h %s",
+            &format!("{target}..{branch_name}"),
+        ],
+    )?;
+
+    let log_output = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+
+    for line in log_output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse "shorthash subject"
+        let (short_hash, subject) = match line.split_once(' ') {
+            Some((hash, subj)) => (hash.to_string(), subj.to_string()),
+            None => (line.to_string(), String::new()),
+        };
+
+        // Get diff stats for this commit
+        let stats_output = run_git(
+            repo_path,
+            &["diff", "--shortstat", &format!("{short_hash}^..{short_hash}")],
+        );
+
+        let (insertions, deletions) = if let Ok(output) = stats_output {
+            parse_shortstat(&String::from_utf8_lossy(&output.stdout))
+        } else {
+            (0, 0)
+        };
+
+        commits.push(CommitInfo {
+            short_hash,
+            subject,
+            insertions,
+            deletions,
+        });
+    }
+
+    Ok(commits)
+}
+
+/// Parse git's --shortstat output to extract insertions and deletions.
+fn parse_shortstat(output: &str) -> (usize, usize) {
+    let mut insertions = 0;
+    let mut deletions = 0;
+
+    // Format: " N files changed, M insertions(+), K deletions(-)"
+    for part in output.split(',') {
+        let part = part.trim();
+        if part.contains("insertion") {
+            if let Some(num) = part.split_whitespace().next() {
+                insertions = num.parse().unwrap_or(0);
             }
-            Err(_) => {
-                // Try next candidate; failing to look at one target shouldn't abort the search.
-                continue;
+        } else if part.contains("deletion") {
+            if let Some(num) = part.split_whitespace().next() {
+                deletions = num.parse().unwrap_or(0);
             }
         }
     }
 
-    Ok(MergeStatus::Unknown)
+    (insertions, deletions)
 }
 
 /// Determine the configured upstream for a given branch, if any.
