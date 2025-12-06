@@ -380,11 +380,7 @@ pub fn unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<Vec<Commi
     // Get commits with short hash and subject
     let output = run_git(
         repo_path,
-        &[
-            "log",
-            "--format=%h %s",
-            &format!("{target}..{branch_name}"),
-        ],
+        &["log", "--format=%h %s", &format!("{target}..{branch_name}")],
     )?;
 
     let log_output = String::from_utf8_lossy(&output.stdout);
@@ -404,7 +400,11 @@ pub fn unmerged_commits(repo_path: &Path, branch_name: &str) -> Result<Vec<Commi
         // Get diff stats for this commit
         let stats_output = run_git(
             repo_path,
-            &["diff", "--shortstat", &format!("{short_hash}^..{short_hash}")],
+            &[
+                "diff",
+                "--shortstat",
+                &format!("{short_hash}^..{short_hash}"),
+            ],
         );
 
         let (insertions, deletions) = if let Ok(output) = stats_output {
@@ -436,10 +436,10 @@ fn parse_shortstat(output: &str) -> (usize, usize) {
             if let Some(num) = part.split_whitespace().next() {
                 insertions = num.parse().unwrap_or(0);
             }
-        } else if part.contains("deletion") {
-            if let Some(num) = part.split_whitespace().next() {
-                deletions = num.parse().unwrap_or(0);
-            }
+        } else if part.contains("deletion")
+            && let Some(num) = part.split_whitespace().next()
+        {
+            deletions = num.parse().unwrap_or(0);
         }
     }
 

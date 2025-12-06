@@ -46,7 +46,9 @@ enum Commands {
 /// Demonstrate all message types.
 fn demo_messages(output: &dyn Output) {
     println!("\n=== Message Types ===\n");
-    output.message("Status update: checking prerequisites").unwrap();
+    output
+        .message("Status update: checking prerequisites")
+        .unwrap();
     output.message("Cloning repository to sandbox...").unwrap();
     output.success("Sandbox created successfully").unwrap();
     output.warn("Branch has diverged from main").unwrap();
@@ -57,12 +59,13 @@ fn demo_messages(output: &dyn Output) {
 fn demo_wrap(output: &dyn Output) {
     println!("\n=== Text Wrapping ===\n");
     output.message("This is a short message.").unwrap();
-    output.message(
-        "This is a much longer message that should wrap to multiple lines when \
+    output
+        .message(
+            "This is a much longer message that should wrap to multiple lines when \
          the terminal is narrow enough. It contains enough text to demonstrate \
          how the wrapping behaves with the current terminal width.",
-    )
-    .unwrap();
+        )
+        .unwrap();
     output
         .success(
             "Operation completed successfully after processing all 47 files in the \
@@ -205,7 +208,9 @@ fn demo_workflow(output: &dyn Output) {
     cleanup.warn("You have uncommitted changes").unwrap();
 
     // Would normally prompt here
-    cleanup.message("Staging and committing changes...").unwrap();
+    cleanup
+        .message("Staging and committing changes...")
+        .unwrap();
     cleanup.success("Committed with message: WIP").unwrap();
     cleanup.message("Removing worktree").unwrap();
     cleanup

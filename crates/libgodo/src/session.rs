@@ -146,7 +146,10 @@ impl SessionLease {
         let remaining = lease_files(&lease_dir)?.len();
 
         if remaining == 0 {
-            Ok(ReleaseOutcome::Last(CleanupGuard { lock_file, lease_dir }))
+            Ok(ReleaseOutcome::Last(CleanupGuard {
+                lock_file,
+                lease_dir,
+            }))
         } else {
             lock_file.unlock().map_err(map_io)?;
             Ok(ReleaseOutcome::NotLast)
@@ -161,9 +164,8 @@ impl Drop for SessionLease {
 }
 
 fn prune_stale_leases(dir: &Path) -> Result<(), GodoError> {
-    let mut sys = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::new()),
-    );
+    let mut sys =
+        System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
 
     for lease in lease_files(dir)? {
         if let Some(pid) = parse_pid(&lease) {
@@ -183,7 +185,12 @@ fn lease_files(dir: &Path) -> Result<Vec<PathBuf>, GodoError> {
     for entry in fs::read_dir(dir).map_err(map_io)? {
         let entry = entry.map_err(map_io)?;
         let path = entry.path();
-        if path.is_file() && path.file_name().map(|n| n.to_string_lossy().starts_with("lease-")).unwrap_or(false) {
+        if path.is_file()
+            && path
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with("lease-"))
+                .unwrap_or(false)
+        {
             files.push(path);
         }
     }

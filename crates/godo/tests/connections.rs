@@ -84,17 +84,26 @@ fn concurrent_sessions_update_connection_counts() {
     // Both active => 2 active connections
     thread::sleep(Duration::from_millis(200));
     let out = list_output(&repo_dir, &godo_dir);
-    assert!(out.contains("shared") && out.contains("2 active connections"), "list while both running: {out}");
+    assert!(
+        out.contains("shared") && out.contains("2 active connections"),
+        "list while both running: {out}"
+    );
 
     // After the shorter run exits => 1 active connection
     thread::sleep(Duration::from_millis(800));
     let out = list_output(&repo_dir, &godo_dir);
-    assert!(out.contains("shared") && out.contains("1 active connection"), "list with one running: {out}");
+    assert!(
+        out.contains("shared") && out.contains("1 active connection"),
+        "list with one running: {out}"
+    );
 
     // Let the final run finish; connections label should disappear (0)
     let _ = first.wait();
     let _ = second.wait();
 
     let out = list_output(&repo_dir, &godo_dir);
-    assert!(out.contains("shared") && !out.contains("active connection"), "list after all exits: {out}");
+    assert!(
+        out.contains("shared") && !out.contains("active connection"),
+        "list after all exits: {out}"
+    );
 }
