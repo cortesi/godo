@@ -460,62 +460,73 @@ impl Godo {
             git::create_worktree(&self.repo_dir, &sandbox_path, &branch)
                 .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
 
-            self.output.message("Cloning tree to sandbox...")?;
+            let spinner = self.output.spinner("Cloning tree to sandbox...");
 
             // Clone each top-level entry from repo to sandbox, skipping .git.
             // We do this entry-by-entry because clone_tree requires the destination
             // not to exist, but the worktree already created the sandbox with .git.
-            for entry in fs::read_dir(&self.repo_dir)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                if name == ".git" {
-                    continue;
-                }
-
-                // Check user excludes
-                let name_str = name.to_string_lossy();
-                if excludes.iter().any(|ex| name_str == *ex) {
-                    continue;
-                }
-
-                let src = entry.path();
-                let dest = sandbox_path.join(&name);
-
-                // Remove existing entry in sandbox (from worktree checkout)
-                if dest.exists() || dest.is_symlink() {
-                    if dest.is_dir() && !dest.is_symlink() {
-                        fs::remove_dir_all(&dest)?;
-                    } else {
-                        fs::remove_file(&dest)?;
+            let clone_result: std::result::Result<(), GodoError> = (|| {
+                for entry in fs::read_dir(&self.repo_dir)? {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    if name == ".git" {
+                        continue;
                     }
-                }
 
-                if src.is_dir() && !src.is_symlink() {
-                    clone_tree(&src, &dest, &Options::new()).map_err(|e| {
-                        GodoError::OperationError(format!(
-                            "Failed to clone {:?} to sandbox: {e}",
-                            name
-                        ))
-                    })?;
-                } else if src.is_symlink() {
-                    let target = fs::read_link(&src)?;
-                    #[cfg(unix)]
-                    std::os::unix::fs::symlink(&target, &dest)?;
-                    #[cfg(windows)]
-                    {
-                        if target.is_dir() {
-                            std::os::windows::fs::symlink_dir(&target, &dest)?;
+                    // Check user excludes
+                    let name_str = name.to_string_lossy();
+                    if excludes.iter().any(|ex| name_str == *ex) {
+                        continue;
+                    }
+
+                    let src = entry.path();
+                    let dest = sandbox_path.join(&name);
+
+                    // Remove existing entry in sandbox (from worktree checkout)
+                    if dest.exists() || dest.is_symlink() {
+                        if dest.is_dir() && !dest.is_symlink() {
+                            fs::remove_dir_all(&dest)?;
                         } else {
-                            std::os::windows::fs::symlink_file(&target, &dest)?;
+                            fs::remove_file(&dest)?;
                         }
                     }
-                } else {
-                    reflink_copy::reflink_or_copy(&src, &dest).map_err(|e| {
-                        GodoError::OperationError(format!(
-                            "Failed to copy {:?} to sandbox: {e}",
-                            name
-                        ))
-                    })?;
+
+                    if src.is_dir() && !src.is_symlink() {
+                        clone_tree(&src, &dest, &Options::new()).map_err(|e| {
+                            GodoError::OperationError(format!(
+                                "Failed to clone {:?} to sandbox: {e}",
+                                name
+                            ))
+                        })?;
+                    } else if src.is_symlink() {
+                        let target = fs::read_link(&src)?;
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(&target, &dest)?;
+                        #[cfg(windows)]
+                        {
+                            if target.is_dir() {
+                                std::os::windows::fs::symlink_dir(&target, &dest)?;
+                            } else {
+                                std::os::windows::fs::symlink_file(&target, &dest)?;
+                            }
+                        }
+                    } else {
+                        reflink_copy::reflink_or_copy(&src, &dest).map_err(|e| {
+                            GodoError::OperationError(format!(
+                                "Failed to copy {:?} to sandbox: {e}",
+                                name
+                            ))
+                        })?;
+                    }
+                }
+                Ok(())
+            })();
+
+            match clone_result {
+                Ok(()) => spinner.finish_success("Sandbox ready"),
+                Err(e) => {
+                    spinner.finish_fail("Clone failed");
+                    return Err(e);
                 }
             }
 
@@ -1063,7 +1074,7 @@ mod tests {
 
     use super::*;
     use crate::session::{ReleaseOutcome, SessionManager};
-    use liboutput::{Output, Quiet, Result as OutputResult};
+    use liboutput::{Output, Quiet, Result as OutputResult, Spinner};
     use tempfile::tempdir;
 
     struct DirGuard {
@@ -1376,6 +1387,15 @@ mod tests {
         godo.remove("test-sandbox", true).unwrap();
     }
 
+    // Mock spinner for testing
+    struct MockSpinner;
+
+    impl Spinner for MockSpinner {
+        fn finish_success(self: Box<Self>, _msg: &str) {}
+        fn finish_fail(self: Box<Self>, _msg: &str) {}
+        fn finish_clear(self: Box<Self>) {}
+    }
+
     // Mock output for testing prompt_for_action
     struct MockOutput {
         selection: usize,
@@ -1414,6 +1434,10 @@ mod tests {
             Box::new(Self {
                 selection: self.selection,
             })
+        }
+
+        fn spinner(&self, _msg: &str) -> Box<dyn Spinner> {
+            Box::new(MockSpinner)
         }
     }
 

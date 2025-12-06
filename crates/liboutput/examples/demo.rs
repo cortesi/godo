@@ -35,6 +35,8 @@ enum Commands {
     Workflow,
     /// Test text wrapping with long messages
     Wrap,
+    /// Test spinner animation
+    Spinner,
     /// Run all demos
     All,
 }
@@ -128,6 +130,28 @@ fn demo_sections(output: &dyn Output) {
     output.success("Operation finished").unwrap();
 }
 
+/// Demonstrate spinner animation.
+fn demo_spinner(output: &dyn Output) {
+    println!("\n=== Spinner Animation ===\n");
+
+    // Success case
+    let spinner = output.spinner("Processing files...");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    spinner.finish_success("Files processed successfully");
+
+    // Failure case
+    let spinner = output.spinner("Connecting to server...");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    spinner.finish_fail("Connection failed");
+
+    // Clear case
+    let spinner = output.spinner("Temporary operation...");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    spinner.finish_clear();
+
+    output.message("(spinner was cleared above)").unwrap();
+}
+
 /// Simulate a realistic godo workflow.
 fn demo_workflow(output: &dyn Output) {
     println!("\n=== Simulated Godo Workflow ===\n");
@@ -136,8 +160,10 @@ fn demo_workflow(output: &dyn Output) {
     output
         .message("Creating sandbox feature-xyz with branch godo/feature-xyz")
         .unwrap();
-    output.message("Cloning tree to sandbox...").unwrap();
-    output.success("Sandbox ready").unwrap();
+
+    let spinner = output.spinner("Cloning tree to sandbox...");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    spinner.finish_success("Sandbox ready");
 
     // Simulate some work happening...
     println!();
@@ -166,6 +192,7 @@ fn demo_all(output: &dyn Output) {
     demo_messages(output);
     demo_wrap(output);
     demo_sections(output);
+    demo_spinner(output);
     demo_workflow(output);
     // Skip interactive demos in "all" mode
     println!("\n(Skipping interactive demos: select, confirm)\n");
@@ -182,6 +209,7 @@ fn main() {
         Some(Commands::Sections) => demo_sections(&output),
         Some(Commands::Workflow) => demo_workflow(&output),
         Some(Commands::Wrap) => demo_wrap(&output),
+        Some(Commands::Spinner) => demo_spinner(&output),
         Some(Commands::All) => demo_all(&output),
         None => {
             println!("demo: Test harness for liboutput\n");

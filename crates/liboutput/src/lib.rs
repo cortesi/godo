@@ -13,12 +13,14 @@ use std::{
     collections::HashSet,
     io::{self, Write},
     result::Result as StdResult,
+    time::Duration,
 };
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal,
 };
+use indicatif::{ProgressBar, ProgressStyle};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
@@ -96,6 +98,18 @@ pub enum OutputError {
 /// Convenience alias for output-related fallible operations.
 pub type Result<T> = StdResult<T, OutputError>;
 
+/// A handle to a running spinner animation.
+///
+/// The spinner will automatically stop and clear when dropped.
+pub trait Spinner: Send {
+    /// Stop the spinner and display a success message.
+    fn finish_success(self: Box<Self>, msg: &str);
+    /// Stop the spinner and display a failure message.
+    fn finish_fail(self: Box<Self>, msg: &str);
+    /// Stop the spinner and clear the line (no message).
+    fn finish_clear(self: Box<Self>);
+}
+
 /// Abstraction over how user-facing messages and prompts are produced.
 ///
 /// Implementations can render to a terminal, suppress output, or emit to other
@@ -117,6 +131,20 @@ pub trait Output: Send + Sync {
     fn finish(&self) -> Result<()>;
     /// Create a nested output section with a header.
     fn section(&self, header: &str) -> Box<dyn Output>;
+    /// Start a spinner with the given message.
+    ///
+    /// Returns a handle that can be used to stop the spinner with a final message.
+    /// The spinner will animate until stopped.
+    fn spinner(&self, msg: &str) -> Box<dyn Spinner>;
+}
+
+/// A no-op spinner for quiet mode.
+struct QuietSpinner;
+
+impl Spinner for QuietSpinner {
+    fn finish_success(self: Box<Self>, _msg: &str) {}
+    fn finish_fail(self: Box<Self>, _msg: &str) {}
+    fn finish_clear(self: Box<Self>) {}
 }
 
 /// Output implementation that suppresses all messages and rejects interactive
@@ -158,6 +186,34 @@ impl Output for Quiet {
 
     fn section(&self, _header: &str) -> Box<dyn Output> {
         Box::new(Self)
+    }
+
+    fn spinner(&self, _msg: &str) -> Box<dyn Spinner> {
+        Box::new(QuietSpinner)
+    }
+}
+
+/// A terminal spinner using indicatif.
+struct TerminalSpinner {
+    /// The underlying progress bar from indicatif.
+    bar: ProgressBar,
+}
+
+impl Spinner for TerminalSpinner {
+    fn finish_success(self: Box<Self>, msg: &str) {
+        self.bar
+            .set_style(ProgressStyle::with_template(&format!("\x1b[32m✓\x1b[0m {msg}")).unwrap());
+        self.bar.finish();
+    }
+
+    fn finish_fail(self: Box<Self>, msg: &str) {
+        self.bar
+            .set_style(ProgressStyle::with_template(&format!("\x1b[31m✗\x1b[0m {msg}")).unwrap());
+        self.bar.finish();
+    }
+
+    fn finish_clear(self: Box<Self>) {
+        self.bar.finish_and_clear();
     }
 }
 
@@ -525,6 +581,18 @@ impl Output for Terminal {
             line_prefix: new_prefix,
             is_root: false,
         })
+    }
+
+    fn spinner(&self, msg: &str) -> Box<dyn Spinner> {
+        let bar = ProgressBar::new_spinner();
+        bar.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        bar.set_message(msg.to_string());
+        bar.enable_steady_tick(Duration::from_millis(80));
+        Box::new(TerminalSpinner { bar })
     }
 }
 

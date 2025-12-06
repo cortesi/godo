@@ -28,6 +28,7 @@ liboutput = { version = "0.0.1", path = "crates/liboutput" }
 fs4 = "0.8"
 reflink-copy = "0.1"
 sysinfo = "0.30"
+indicatif = "0.17"
 
 
 
