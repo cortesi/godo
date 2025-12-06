@@ -30,16 +30,6 @@ const DEFAULT_WIDTH: usize = 80;
 /// Minimum width before we disable wrapping entirely.
 const MIN_WRAP_WIDTH: usize = 40;
 
-/// Box-drawing characters for section structure.
-mod chars {
-    /// Vertical line for continuing structure.
-    pub const VLINE: &str = "|";
-    /// Tee for items in a section.
-    pub const TEE: &str = "+";
-    /// Horizontal line after tee.
-    pub const HLINE: &str = "-";
-}
-
 /// ASCII control representation of `Ctrl+C`.
 const CTRL_C: char = '\u{3}';
 /// ASCII control representation of `Ctrl+D`.
@@ -123,6 +113,8 @@ pub trait Output: Send + Sync {
     fn warn(&self, msg: &str) -> Result<()>;
     /// Print an error/failure message (something went wrong).
     fn fail(&self, msg: &str) -> Result<()>;
+    /// Print a diff stat line with colored +insertions/-deletions.
+    fn diff_stat(&self, label: &str, insertions: usize, deletions: usize) -> Result<()>;
     /// Ask the user to confirm an action; returns `true` if confirmed.
     fn confirm(&self, prompt: &str) -> Result<bool>;
     /// Present a list of `options` and return the chosen index.
@@ -165,6 +157,10 @@ impl Output for Quiet {
     }
 
     fn fail(&self, _msg: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn diff_stat(&self, _label: &str, _insertions: usize, _deletions: usize) -> Result<()> {
         Ok(())
     }
 
@@ -221,10 +217,8 @@ impl Spinner for TerminalSpinner {
 pub struct Terminal {
     /// Whether to emit ANSI color sequences when writing to stdout.
     color_choice: ColorChoice,
-    /// The prefix string for this section level (tree characters).
+    /// The prefix string for indentation in nested sections.
     line_prefix: String,
-    /// Whether this is the root level (affects prefix rendering).
-    is_root: bool,
 }
 
 impl Terminal {
@@ -241,7 +235,6 @@ impl Terminal {
         Self {
             color_choice,
             line_prefix: String::new(),
-            is_root: true,
         }
     }
 
@@ -293,12 +286,9 @@ impl Terminal {
         Ok(())
     }
 
-    /// Get the prefix for continuation lines (vertical bars only).
-    fn continuation_prefix(&self) -> String {
-        // Replace tee with vertical line for continuation
-        self.line_prefix
-            .replace(chars::TEE, chars::VLINE)
-            .replace(chars::HLINE, " ")
+    /// Get the prefix for continuation lines.
+    fn continuation_prefix(&self) -> &str {
+        &self.line_prefix
     }
 
     /// Write a message with color styling.
@@ -449,6 +439,36 @@ impl Output for Terminal {
         self.write_message(msg, Some(Color::Red), false)
     }
 
+    fn diff_stat(&self, label: &str, insertions: usize, deletions: usize) -> Result<()> {
+        let mut stdout = StandardStream::stdout(self.color_choice);
+
+        // Write prefix if we're in a section
+        if !self.line_prefix.is_empty() {
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
+            write!(stdout, "{}", self.line_prefix)?;
+            stdout.reset()?;
+        }
+
+        // Write the label
+        write!(stdout, "{} ", label)?;
+
+        // Write insertions in green
+        stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+        write!(stdout, "+{}", insertions)?;
+        stdout.reset()?;
+
+        write!(stdout, "/")?;
+
+        // Write deletions in red
+        stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+        write!(stdout, "-{}", deletions)?;
+        stdout.reset()?;
+
+        writeln!(stdout)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
     fn confirm(&self, prompt: &str) -> Result<bool> {
         let options = vec!["Yes".to_string(), "No".to_string()];
         let selection = self.select(prompt, options)?;
@@ -561,25 +581,12 @@ impl Output for Terminal {
         let _ = stdout.reset();
         let _ = stdout.flush();
 
-        // Build the new prefix for children
-        let new_prefix = if self.is_root {
-            // First level children get a simple tree start
-            format!("{}{} ", chars::TEE, chars::HLINE)
-        } else {
-            // Deeper children extend the existing prefix
-            format!(
-                "{}{}{}{}",
-                self.continuation_prefix(),
-                chars::TEE,
-                chars::HLINE,
-                " "
-            )
-        };
+        // Build the new prefix for children - simple indentation
+        let new_prefix = format!("{}   ", self.line_prefix);
 
         Box::new(Self {
             color_choice: self.color_choice,
             line_prefix: new_prefix,
-            is_root: false,
         })
     }
 

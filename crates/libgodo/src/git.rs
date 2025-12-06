@@ -43,6 +43,38 @@ pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
     let status_output = String::from_utf8_lossy(&output.stdout);
     Ok(!status_output.trim().is_empty())
 }
+
+/// Statistics about uncommitted changes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiffStats {
+    /// Lines added.
+    pub insertions: usize,
+    /// Lines removed.
+    pub deletions: usize,
+}
+
+/// Get diff statistics for uncommitted changes (both staged and unstaged).
+pub fn diff_stats(repo_path: &Path) -> Result<DiffStats> {
+    // Use --numstat to get machine-readable output: "added\tremoved\tfilename"
+    let output = run_git(repo_path, &["diff", "HEAD", "--numstat"])?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    let mut stats = DiffStats::default();
+    for line in output_str.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 2 {
+            // Binary files show "-" instead of numbers
+            if let Ok(ins) = parts[0].parse::<usize>() {
+                stats.insertions += ins;
+            }
+            if let Ok(del) = parts[1].parse::<usize>() {
+                stats.deletions += del;
+            }
+        }
+    }
+
+    Ok(stats)
+}
 /// Determine if a branch named `branch_name` exists in the repository.
 pub fn has_branch(repo_path: &Path, branch_name: &str) -> Result<bool> {
     let output = run_git(repo_path, &["branch", "--list", branch_name])?;
@@ -259,24 +291,28 @@ pub fn branch_merge_status(repo_path: &Path, branch_name: &str) -> Result<MergeS
 
     let mut candidates = Vec::new();
 
-    if let Some(upstream) = upstream_of(repo_path, branch_name)? {
+    // Prefer local main/master branches first - these represent the actual
+    // local state, not what's been pushed to origin. A sandbox created from
+    // main should be compared against main, not origin/main.
+    for local_branch in ["main", "master"] {
+        if has_branch(repo_path, local_branch)? {
+            candidates.push(local_branch.to_string());
+            break; // Only need one
+        }
+    }
+
+    // Fall back to configured upstream of the branch itself.
+    if let Some(upstream) = upstream_of(repo_path, branch_name)?
+        && !candidates.contains(&upstream)
+    {
         candidates.push(upstream);
     }
 
+    // Fall back to remote default branch.
     if let Some(default_target) = default_integration_target(repo_path)?
         && !candidates.contains(&default_target)
     {
         candidates.push(default_target);
-    }
-
-    // Fall back to common branch names if everything else failed.
-    for fallback in ["main", "master"] {
-        if candidates.iter().any(|c| c == fallback) {
-            continue;
-        }
-        if has_branch(repo_path, fallback)? {
-            candidates.push(fallback.to_string());
-        }
     }
 
     for target in candidates {

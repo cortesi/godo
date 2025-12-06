@@ -446,7 +446,7 @@ fn test_list_shows_connection_count() -> Result<()> {
     let list_output = env.run_godo(&["list"])?;
     let stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(
-        stdout.contains("connections: 2"),
+        stdout.contains("2 active connections"),
         "Expected list output to show two connections, got: {stdout}"
     );
 

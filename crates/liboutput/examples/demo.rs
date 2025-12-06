@@ -37,6 +37,8 @@ enum Commands {
     Wrap,
     /// Test spinner animation
     Spinner,
+    /// Simulate godo list output
+    List,
     /// Run all demos
     All,
 }
@@ -152,6 +154,30 @@ fn demo_spinner(output: &dyn Output) {
     output.message("(spinner was cleared above)").unwrap();
 }
 
+/// Simulate godo list output.
+fn demo_list(output: &dyn Output) {
+    println!("\n=== Sandbox List ===\n");
+
+    // Clean sandbox - just the bold name
+    output.section("bugfix-login");
+
+    // Sandbox with active connections
+    let section = output.section("feature-auth");
+    section.message("2 active connections").unwrap();
+
+    // Sandbox with issues
+    let section = output.section("old-experiment");
+    section.warn("unmerged commits").unwrap();
+    section.warn("uncommitted changes").unwrap();
+
+    // Another clean one
+    output.section("refactor-api");
+
+    // Dangling sandbox
+    let section = output.section("abandoned-feature");
+    section.fail("dangling worktree").unwrap();
+}
+
 /// Simulate a realistic godo workflow.
 fn demo_workflow(output: &dyn Output) {
     println!("\n=== Simulated Godo Workflow ===\n");
@@ -193,6 +219,7 @@ fn demo_all(output: &dyn Output) {
     demo_wrap(output);
     demo_sections(output);
     demo_spinner(output);
+    demo_list(output);
     demo_workflow(output);
     // Skip interactive demos in "all" mode
     println!("\n(Skipping interactive demos: select, confirm)\n");
@@ -210,6 +237,7 @@ fn main() {
         Some(Commands::Workflow) => demo_workflow(&output),
         Some(Commands::Wrap) => demo_wrap(&output),
         Some(Commands::Spinner) => demo_spinner(&output),
+        Some(Commands::List) => demo_list(&output),
         Some(Commands::All) => demo_all(&output),
         None => {
             println!("demo: Test harness for liboutput\n");

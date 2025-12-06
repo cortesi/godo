@@ -91,6 +91,8 @@ struct Sandbox {
     worktree_branch_matches: bool,
     /// Whether there are any staged or unstaged uncommitted changes in the worktree
     has_uncommitted_changes: bool,
+    /// Diff statistics for uncommitted changes (lines added/removed)
+    diff_stats: Option<git::DiffStats>,
     /// Merge relationship between the sandbox branch and its integration target
     merge_status: MergeStatus,
     /// Whether the worktree is dangling (no backing directory)
@@ -146,42 +148,38 @@ impl Sandbox {
         parts.join(", ")
     }
 
-    /// Display the sandbox status using the provided output
+    /// Display the sandbox status using the provided output.
+    /// Only shows information that requires user attention.
     fn show(&self, output: &dyn Output, connections: usize) -> Result<()> {
-        let mut attributes = Vec::new();
+        // Check if there are any issues to report
+        let has_unmerged = self.has_branch && matches!(self.merge_status, MergeStatus::Diverged);
+        let has_uncommitted = self.has_worktree && self.has_uncommitted_changes;
+
+        // Always use section for consistent visual hierarchy (bold name)
+        let section = output.section(&self.name);
 
         if connections > 0 {
-            attributes.push(format!("connections: {connections}"));
-        }
-
-        if self.has_branch {
-            let branch_status = match self.merge_status {
-                MergeStatus::Diverged => "branch [unmerged]",
-                MergeStatus::Clean => "branch [merged]",
-                MergeStatus::Unknown => "branch [merge status unknown]",
-            };
-            attributes.push(branch_status.to_string());
-        }
-
-        if self.has_worktree {
-            if self.has_uncommitted_changes {
-                attributes.push("worktree [uncommitted]".to_string());
+            let label = if connections == 1 {
+                "1 active connection".to_string()
             } else {
-                attributes.push("worktree [clean]".to_string());
+                format!("{connections} active connections")
+            };
+            section.message(&label)?;
+        }
+        if has_unmerged {
+            section.warn("unmerged commits")?;
+        }
+        if has_uncommitted {
+            if let Some(stats) = &self.diff_stats {
+                section.diff_stat("uncommitted changes", stats.insertions, stats.deletions)?;
+            } else {
+                section.warn("uncommitted changes")?;
             }
         }
-
         if self.is_dangling {
-            attributes.push("dangling worktree".to_string());
+            section.fail("dangling worktree")?;
         }
 
-        let attributes_str = if attributes.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", attributes.join(", "))
-        };
-
-        output.message(&format!("{}{}", self.name, attributes_str))?;
         Ok(())
     }
 }
@@ -757,10 +755,16 @@ impl Godo {
         let is_dangling = has_worktree_dir && !has_branch;
 
         // Check for uncommitted changes (only if worktree exists)
-        let has_uncommitted_changes = if has_worktree && has_worktree_dir {
-            git::has_uncommitted_changes(&sandbox_path).unwrap_or(false)
+        let (has_uncommitted_changes, diff_stats) = if has_worktree && has_worktree_dir {
+            let has_changes = git::has_uncommitted_changes(&sandbox_path).unwrap_or(false);
+            let stats = if has_changes {
+                git::diff_stats(&sandbox_path).ok()
+            } else {
+                None
+            };
+            (has_changes, stats)
         } else {
-            false
+            (false, None)
         };
 
         Ok(Some(Sandbox {
@@ -772,6 +776,7 @@ impl Godo {
             worktree_detached,
             worktree_branch_matches: branch_matches_worktree,
             has_uncommitted_changes,
+            diff_stats,
             merge_status,
             is_dangling,
         }))
@@ -1159,6 +1164,7 @@ mod tests {
             worktree_detached: true,
             worktree_branch_matches: true,
             has_uncommitted_changes: false,
+            diff_stats: None,
             merge_status: MergeStatus::Unknown,
             is_dangling: false,
         };
@@ -1415,6 +1421,10 @@ mod tests {
         }
 
         fn fail(&self, _msg: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn diff_stat(&self, _label: &str, _insertions: usize, _deletions: usize) -> OutputResult<()> {
             Ok(())
         }
 
