@@ -382,10 +382,10 @@ impl Godo {
 
         // Build prompt message
         let prompt = match (has_uncommitted, has_unmerged) {
-            (true, true) => "You have uncommitted changes and unmerged commits.",
-            (true, false) => "You have uncommitted changes.",
-            (false, true) => "You have unmerged commits.",
-            (false, false) => "Command completed.",
+            (true, true) => "Uncommitted changes and unmerged commits. What next?",
+            (true, false) => "Uncommitted changes. What next?",
+            (false, true) => "Unmerged commits. What next?",
+            (false, false) => "What next?",
         };
 
         // Build options based on state - only show relevant actions
@@ -394,25 +394,25 @@ impl Godo {
 
         // Commit only makes sense if there are uncommitted changes
         if has_uncommitted {
-            options.push("commit - stage all changes and commit".to_string());
+            options.push("Commit all changes".to_string());
             actions.push(PostRunAction::Commit);
         }
 
         // Shell is always available
-        options.push("shell - open a shell in the sandbox".to_string());
+        options.push("Drop to shell".to_string());
         actions.push(PostRunAction::Shell);
 
         // Keep is always available
-        options.push("keep - keep the sandbox".to_string());
+        options.push("Keep sandbox".to_string());
         actions.push(PostRunAction::Keep);
 
         // Discard is always available (discards everything)
-        options.push("discard - delete sandbox and branch".to_string());
+        options.push("Discard everything".to_string());
         actions.push(PostRunAction::Discard);
 
         // Branch only makes sense if there are unmerged commits worth keeping
         if has_unmerged {
-            options.push("branch - keep branch, delete worktree".to_string());
+            options.push("Keep branch only".to_string());
             actions.push(PostRunAction::Branch);
         }
 
@@ -469,13 +469,12 @@ impl Godo {
 
                 if !self.no_prompt {
                     let options = vec![
-                        "Abort - cancel the operation".to_string(),
-                        "Continue - create worktree with uncommitted changes".to_string(),
-                        "Use clean branch - create worktree without uncommitted changes"
-                            .to_string(),
+                        "Abort".to_string(),
+                        "Include uncommitted changes".to_string(),
+                        "Start clean (HEAD only)".to_string(),
                     ];
 
-                    match self.prompt_select("What would you like to do?", options)? {
+                    match self.prompt_select("Uncommitted changes in working tree", options)? {
                         0 => return Err(GodoError::UserAborted), // Abort
                         1 => {} // Continue - do nothing, proceed with normal flow
                         2 => {
@@ -716,9 +715,7 @@ impl Godo {
                         PostRunAction::Discard => {
                             // Confirm discard action
                             if !self.no_prompt
-                                && !self.prompt_confirm(
-                                    "Really discard all changes and delete the branch?",
-                                )?
+                                && !self.prompt_confirm("Discard all changes and delete branch?")?
                             {
                                 // User cancelled, continue the loop to show prompt again
                                 continue;
@@ -936,7 +933,7 @@ impl Godo {
                         message: "has uncommitted changes (use --force to remove)".to_string(),
                     });
                 }
-                if !self.prompt_confirm("Sandbox has uncommitted changes. Remove anyway?")? {
+                if !self.prompt_confirm("Uncommitted changes will be lost. Continue?")? {
                     return Err(GodoError::UserAborted);
                 }
             }
@@ -956,9 +953,9 @@ impl Godo {
                     });
                 }
                 let prompt = if matches!(status.merge_status, MergeStatus::Unknown) {
-                    "Branch merge status is unknown. Remove anyway?"
+                    "Merge status unknown (commits may be lost). Continue?"
                 } else {
-                    "Branch has unmerged commits. Remove anyway?"
+                    "Unmerged commits will be lost. Continue?"
                 };
                 if !self.prompt_confirm(prompt)? {
                     return Err(GodoError::UserAborted);
@@ -989,7 +986,7 @@ impl Godo {
                 if status.has_worktree
                     && status.has_uncommitted_changes
                     && !self.no_prompt
-                    && !self.prompt_confirm("Sandbox has uncommitted changes. Clean anyway?")?
+                    && !self.prompt_confirm("Uncommitted changes will be lost. Continue?")?
                 {
                     return Err(GodoError::UserAborted);
                 }
