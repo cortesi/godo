@@ -448,6 +448,7 @@ impl Output for Terminal {
         Ok(())
     }
 
+    #[allow(clippy::let_underscore_must_use)]
     fn section(&self, header: &str) -> Box<dyn Output> {
         let mut stdout = StandardStream::stdout(self.color_choice);
 

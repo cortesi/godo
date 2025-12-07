@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     env, fs, io,
+    os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
     process::Command,
     result::Result as StdResult,
@@ -271,7 +272,7 @@ fn project_name(repo_path: &Path) -> Result<String> {
 
 /// Return the Git branch name for a given sandbox name.
 fn branch_name(sandbox_name: &str) -> String {
-    format!("godo/{sandbox_name}")
+    format!("godo/{}", sandbox_name)
 }
 
 /// Manager for creating and operating on ephemeral Git sandboxes based on
@@ -440,7 +441,11 @@ impl Godo {
         validate_sandbox_name(sandbox_name)?;
 
         let sandbox_path = self.sandbox_path(sandbox_name)?;
-        let session_manager = SessionManager::new(self.project_dir()?);
+        let project_dir = self.project_dir()?;
+        let session_manager = SessionManager::new(&project_dir);
+
+        // Acquire lock to ensure exclusive access during creation/verification
+        let locked_session = session_manager.lock(sandbox_name)?;
 
         let existing_sandbox = self.get_sandbox(sandbox_name)?;
 
@@ -502,7 +507,7 @@ impl Godo {
             // Clone each top-level entry from repo to sandbox, skipping .git.
             // We do this entry-by-entry because clone_tree requires the destination
             // not to exist, but the worktree already created the sandbox with .git.
-            let clone_result: std::result::Result<(), GodoError> = (|| {
+            let clone_result: Result<()> = (|| {
                 for entry in fs::read_dir(&self.repo_dir)? {
                     let entry = entry?;
                     let name = entry.file_name();
@@ -538,7 +543,7 @@ impl Godo {
                     } else if src.is_symlink() {
                         let target = fs::read_link(&src)?;
                         #[cfg(unix)]
-                        std::os::unix::fs::symlink(&target, &dest)?;
+                        symlink(&target, &dest)?;
                         #[cfg(windows)]
                         {
                             if target.is_dir() {
@@ -583,7 +588,7 @@ impl Godo {
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
         // Acquire session lease to track concurrent connections.
-        let lease = session_manager.acquire(sandbox_name)?;
+        let lease = locked_session.acquire_lease()?;
         let status = if command.is_empty() {
             // Interactive shell
             Command::new(&shell)
@@ -886,7 +891,8 @@ impl Godo {
     /// List all known sandboxes for the current project with their status.
     pub fn list(&self) -> Result<()> {
         let sorted_names = self.all_sandbox_names()?;
-        let session_manager = SessionManager::new(self.project_dir()?);
+        let project_dir = self.project_dir()?;
+        let session_manager = SessionManager::new(&project_dir);
 
         if sorted_names.is_empty() {
             self.output.message("No sandboxes found.")?;
@@ -1105,7 +1111,7 @@ impl Godo {
 
         let spinner = self.output.spinner("Removing sandbox...");
 
-        let result: std::result::Result<(), GodoError> = (|| {
+        let result: Result<()> = (|| {
             if status.has_worktree {
                 git::remove_worktree(&self.repo_dir, &sandbox_path, true)
                     .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
@@ -1184,7 +1190,7 @@ mod tests {
             ("my project", "my-project"),
             ("my@project!", "my-project-"),
             ("my/project", "my-project"),
-            ("my\\project", "my-project"),
+            (r"my\project", "my-project"),
             ("my:project", "my-project"),
             ("my*project", "my-project"),
             ("my?project", "my-project"),
@@ -1252,7 +1258,7 @@ mod tests {
         let repo_dir = tmp.path().join("repo");
         fs::create_dir(&repo_dir).unwrap();
         // Minimal git init so Godo::new accepts the repo
-        std::process::Command::new("git")
+        Command::new("git")
             .arg("init")
             .current_dir(&repo_dir)
             .status()
@@ -1275,10 +1281,10 @@ mod tests {
     #[test]
     fn session_manager_counts_connections() {
         let tmp = tempdir().unwrap();
-        let manager = SessionManager::new(tmp.path().to_path_buf());
+        let manager = SessionManager::new(tmp.path());
 
-        let lease1 = manager.acquire("box").unwrap();
-        let lease2 = manager.acquire("box").unwrap();
+        let lease1 = manager.lock("box").unwrap().acquire_lease().unwrap();
+        let lease2 = manager.lock("box").unwrap().acquire_lease().unwrap();
 
         assert_eq!(manager.active_connections("box").unwrap(), 2);
 
@@ -1286,7 +1292,7 @@ mod tests {
         assert_eq!(manager.active_connections("box").unwrap(), 1);
 
         match lease2.release().unwrap() {
-            ReleaseOutcome::Last(_guard) => {}
+            ReleaseOutcome::Last(_guard) => {} // Expected
             _ => panic!("expected last lease"),
         }
 
@@ -1338,7 +1344,7 @@ mod tests {
             "test.dot",      // contains dot
             "test@symbol",   // contains @
             "test/slash",    // contains /
-            "test\\back",    // contains backslash
+            r"test\back",    // contains backslash
             "test:colon",    // contains colon
             "test*star",     // contains asterisk
             "test?question", // contains question mark

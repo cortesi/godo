@@ -5,6 +5,8 @@
 //!
 //! Run with: `cargo run --example demo -- <command>`
 
+use std::{thread::sleep, time::Duration};
+
 use clap::{Parser, Subcommand};
 use liboutput::{Output, Terminal};
 
@@ -17,6 +19,7 @@ struct Cli {
     #[arg(long)]
     no_color: bool,
 
+    /// Which demo to run
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -141,17 +144,17 @@ fn demo_spinner(output: &dyn Output) {
 
     // Success case
     let spinner = output.spinner("Processing files...");
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2));
     spinner.finish_success("Files processed successfully");
 
     // Failure case
     let spinner = output.spinner("Connecting to server...");
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2));
     spinner.finish_fail("Connection failed");
 
     // Clear case
     let spinner = output.spinner("Temporary operation...");
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    sleep(Duration::from_secs(1));
     spinner.finish_clear();
 
     output.message("(spinner was cleared above)").unwrap();
@@ -191,7 +194,7 @@ fn demo_workflow(output: &dyn Output) {
         .unwrap();
 
     let spinner = output.spinner("Cloning tree to sandbox...");
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2));
     spinner.finish_success("Sandbox ready");
 
     // Simulate some work happening...
