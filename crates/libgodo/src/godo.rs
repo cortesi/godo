@@ -8,13 +8,13 @@ use std::{
 };
 
 use clonetree::{Options, clone_tree};
+use liboutput::{Output, OutputError as OutputErr};
 use thiserror::Error;
 
 use crate::{
     git::{self, MergeStatus},
     session::{ReleaseOutcome, SessionManager},
 };
-use liboutput::{Output, OutputError as OutputErr};
 
 /// Custom Result type for Godo operations.
 pub type Result<T> = StdResult<T, GodoError>;
@@ -1149,10 +1149,11 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::*;
-    use crate::session::{ReleaseOutcome, SessionManager};
     use liboutput::{Output, Quiet, Result as OutputResult, Spinner};
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::session::{ReleaseOutcome, SessionManager};
 
     struct DirGuard {
         original: PathBuf,

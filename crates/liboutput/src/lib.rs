@@ -9,17 +9,13 @@
 //! - [`Quiet`]: A silent implementation that suppresses output (useful for tests)
 
 use std::{
-    char,
-    collections::HashSet,
     io::{self, Write},
     result::Result as StdResult,
     time::Duration,
 };
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    terminal,
-};
+use crossterm::terminal;
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
@@ -29,29 +25,6 @@ const DEFAULT_WIDTH: usize = 80;
 
 /// Minimum width before we disable wrapping entirely.
 const MIN_WRAP_WIDTH: usize = 40;
-
-/// ASCII control representation of `Ctrl+C`.
-const CTRL_C: char = '\u{3}';
-/// ASCII control representation of `Ctrl+D`.
-const CTRL_D: char = '\u{4}';
-
-/// Determine whether the combination of `code` and `modifiers` represents an
-/// interactive cancellation such as `Ctrl+C`, `Ctrl+D`, or `Esc`.
-fn is_cancel_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    match code {
-        KeyCode::Char(ch) => {
-            if modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(ch.to_lowercase().next().unwrap_or(ch), 'c' | 'd')
-            {
-                return true;
-            }
-
-            matches!(ch, CTRL_C | CTRL_D)
-        }
-        KeyCode::Esc => true,
-        _ => false,
-    }
-}
 
 /// Get the current terminal width, falling back to a default.
 fn term_width() -> usize {
@@ -337,107 +310,6 @@ impl Terminal {
         stdout.flush()?;
         Ok(())
     }
-
-    /// Generate mnemonic shortcuts for the provided `options` list.
-    fn generate_shortcuts(&self, options: &[String]) -> Vec<char> {
-        let mut shortcuts = Vec::new();
-        let mut used_chars = HashSet::new();
-
-        for option in options {
-            let mut shortcut = None;
-
-            // Try to find the first unique character in the option
-            for ch in option.chars() {
-                if ch.is_alphabetic() && !used_chars.contains(&ch.to_lowercase().next().unwrap()) {
-                    let lower_ch = ch.to_lowercase().next().unwrap();
-                    used_chars.insert(lower_ch);
-                    shortcut = Some(lower_ch);
-                    break;
-                }
-            }
-
-            // If no unique character found, use a number
-            if shortcut.is_none() {
-                for i in 1..=9 {
-                    let num_char = char::from_digit(i, 10).unwrap();
-                    if !used_chars.contains(&num_char) {
-                        used_chars.insert(num_char);
-                        shortcut = Some(num_char);
-                        break;
-                    }
-                }
-            }
-
-            // If still no shortcut, use any available letter
-            if shortcut.is_none() {
-                for ch in 'a'..='z' {
-                    if !used_chars.contains(&ch) {
-                        used_chars.insert(ch);
-                        shortcut = Some(ch);
-                        break;
-                    }
-                }
-            }
-
-            shortcuts.push(shortcut.unwrap_or('?'));
-        }
-
-        shortcuts
-    }
-
-    /// Render `option` while highlighting `shortcut` within the label when possible.
-    fn print_option_with_shortcut(&self, option: &str, shortcut: char) -> Result<()> {
-        let mut stdout = StandardStream::stdout(self.color_choice);
-
-        // Write the tree prefix first
-        if !self.line_prefix.is_empty() {
-            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
-            write!(stdout, "{}", self.continuation_prefix())?;
-            stdout.reset()?;
-        }
-
-        write!(stdout, "  ")?;
-
-        // Find the first matching character using Unicode-aware iteration.
-        let mut match_byte_idx: Option<usize> = None;
-        let mut match_char: Option<char> = None;
-        for (byte_idx, ch) in option.char_indices() {
-            let lower = ch.to_lowercase().next().unwrap_or(ch);
-            if lower == shortcut {
-                match_byte_idx = Some(byte_idx);
-                match_char = Some(ch);
-                break;
-            }
-        }
-
-        if let (Some(idx), Some(ch)) = (match_byte_idx, match_char) {
-            // Print prefix safely up to the matched character's byte index
-            if idx > 0 {
-                write!(stdout, "{}", &option[..idx])?;
-            }
-
-            // Highlight the matched character (underlined and bold)
-            stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
-            write!(stdout, "{}", ch)?;
-            stdout.reset()?;
-
-            // Print the suffix starting after the matched character
-            let next = idx + ch.len_utf8();
-            if next <= option.len() {
-                write!(stdout, "{}", &option[next..])?;
-            }
-        } else {
-            // Shortcut not in option text, print shortcut in brackets
-            stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
-            write!(stdout, "{}", shortcut)?;
-            stdout.reset()?;
-            write!(stdout, " {}", option)?;
-        }
-
-        writeln!(stdout)?;
-        stdout.flush()?;
-        Ok(())
-    }
 }
 
 impl Output for Terminal {
@@ -547,9 +419,12 @@ impl Output for Terminal {
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
-        let options = vec!["Yes".to_string(), "No".to_string()];
-        let selection = self.select(prompt, options)?;
-        Ok(selection == 0)
+        Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .default(false)
+            .interact_opt()
+            .map_err(|e| OutputError::Terminal(e.to_string()))?
+            .ok_or(OutputError::Cancelled)
     }
 
     fn select(&self, prompt: &str, options: Vec<String>) -> Result<usize> {
@@ -559,82 +434,13 @@ impl Output for Terminal {
             ));
         }
 
-        let mut stdout = StandardStream::stdout(self.color_choice);
-
-        // Generate shortcuts for each option
-        let shortcuts = self.generate_shortcuts(&options);
-
-        // Print the prompt with prefix
-        if !self.line_prefix.is_empty() {
-            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
-            write!(stdout, "{}", self.line_prefix)?;
-            stdout.reset()?;
-        }
-        writeln!(stdout, "{}", prompt)?;
-
-        // Print options with shortcuts highlighted
-        for (option, shortcut) in options.iter().zip(shortcuts.iter()) {
-            self.print_option_with_shortcut(option, *shortcut)?;
-        }
-
-        // Print input prompt
-        if !self.line_prefix.is_empty() {
-            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 100, 100))))?;
-            write!(stdout, "{}", self.continuation_prefix())?;
-            stdout.reset()?;
-        }
-        write!(stdout, "> ")?;
-        stdout.flush()?;
-
-        // Enable raw mode to read single key press
-        terminal::enable_raw_mode().map_err(|e| OutputError::Terminal(e.to_string()))?;
-
-        // Ensure we restore terminal on exit
-        let result = (|| -> Result<(usize, Option<char>)> {
-            loop {
-                if let Event::Key(KeyEvent {
-                    code,
-                    modifiers,
-                    kind,
-                    ..
-                }) = event::read().map_err(|e| OutputError::Terminal(e.to_string()))?
-                {
-                    if kind != KeyEventKind::Press {
-                        continue;
-                    }
-
-                    if is_cancel_key(code, modifiers) {
-                        return Err(OutputError::Cancelled);
-                    }
-
-                    if let KeyCode::Char(ch) = code {
-                        let ch_lower = ch.to_lowercase().next().unwrap();
-
-                        // Check if input matches any shortcut
-                        if let Some(index) = shortcuts.iter().position(|&s| s == ch_lower) {
-                            return Ok((index, Some(ch_lower)));
-                        }
-                    }
-                }
-            }
-        })();
-
-        // Always restore terminal mode
-        terminal::disable_raw_mode().map_err(|e| OutputError::Terminal(e.to_string()))?;
-
-        // Print the selected character after restoring terminal mode
-        match result {
-            Ok((index, Some(ch))) => {
-                println!("{ch}");
-                Ok(index)
-            }
-            Err(OutputError::Cancelled) => {
-                println!();
-                Err(OutputError::Cancelled)
-            }
-            Ok((index, None)) => Ok(index),
-            Err(e) => Err(e),
-        }
+        Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .items(&options)
+            .default(0)
+            .interact_opt()
+            .map_err(|e| OutputError::Terminal(e.to_string()))?
+            .ok_or(OutputError::Cancelled)
     }
 
     fn finish(&self) -> Result<()> {
@@ -713,40 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_generate_shortcuts() {
-        let terminal = Terminal::new(false);
-
-        // Test basic case
-        let options = vec![
-            "Apple".to_string(),
-            "Banana".to_string(),
-            "Cherry".to_string(),
-        ];
-        let shortcuts = terminal.generate_shortcuts(&options);
-        assert_eq!(shortcuts, vec!['a', 'b', 'c']);
-
-        // Test with conflicting first letters
-        let options = vec![
-            "Apple".to_string(),
-            "Apricot".to_string(),
-            "Avocado".to_string(),
-        ];
-        let shortcuts = terminal.generate_shortcuts(&options);
-        assert_eq!(shortcuts[0], 'a');
-        assert!(shortcuts[1] != 'a');
-        assert!(shortcuts[2] != 'a' && shortcuts[2] != shortcuts[1]);
-
-        // Test case insensitive
-        let options = vec![
-            "apple".to_string(),
-            "BANANA".to_string(),
-            "Cherry".to_string(),
-        ];
-        let shortcuts = terminal.generate_shortcuts(&options);
-        assert_eq!(shortcuts, vec!['a', 'b', 'c']);
-    }
-
-    #[test]
     fn test_select_empty_options_error() {
         let terminal = Terminal::new(false);
         let result = terminal.select("Choose:", vec![]);
@@ -756,18 +528,6 @@ mod tests {
             assert!(matches!(e, OutputError::InvalidInput(_)));
             assert_eq!(e.to_string(), "No options provided for selection");
         }
-    }
-
-    #[test]
-    fn test_is_cancel_key_variants() {
-        assert!(is_cancel_key(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(is_cancel_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(is_cancel_key(KeyCode::Char('d'), KeyModifiers::CONTROL));
-        assert!(is_cancel_key(KeyCode::Char(CTRL_C), KeyModifiers::NONE));
-        assert!(is_cancel_key(KeyCode::Char(CTRL_D), KeyModifiers::NONE));
-
-        assert!(!is_cancel_key(KeyCode::Char('c'), KeyModifiers::NONE));
-        assert!(!is_cancel_key(KeyCode::Char('x'), KeyModifiers::CONTROL));
     }
 
     #[test]
