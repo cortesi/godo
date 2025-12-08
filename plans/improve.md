@@ -17,9 +17,9 @@ These items address potential data corruption, race conditions, or broken enviro
         2.  Or, properly initialize submodules in the worktree using `git submodule update --init` (preferred for functionality, but slower).
         3.  At minimum, ensure `clonetree` excludes `.git` files recursively or `godo` scans and unlinks them to prevent confusing `git`.
 
-- [ ] **Protect Against "Dangling" Worktrees**
-    - **Issue:** If `godo` crashes mid-creation, it might leave a `git worktree` but no files, or half-files. `godo run` might pick this up as a valid existing sandbox.
-    - **Fix:** Add a "ready" marker file (e.g., `.godo-ready`) at the end of the clone process. When checking `is_live()`, verify this marker exists. If not, consider the sandbox corrupt and offer to clean/recreate.
+- [x] **Protect Against "Dangling" Worktrees**
+    - **Issue:** Git can retain a worktree entry even if the sandbox directory is missing (e.g., manual deletion or crash). `godo run` previously treated that state as live, leading to failures when commands attempted to run in a non-existent path.
+    - **Fix:** Treat sandboxes as live only when the worktree directory exists; flag missing directories as "dangling" so they surface in `godo list` and are not reused. Added regression test to cover the case.
 
 ## Stage 2: Robustness & Logic
 

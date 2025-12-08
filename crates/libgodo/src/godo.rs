@@ -108,6 +108,7 @@ impl Sandbox {
     fn is_live(&self) -> bool {
         self.has_branch
             && self.has_worktree
+            && self.has_worktree_dir
             && (self.worktree_detached || self.worktree_branch_matches)
     }
 
@@ -811,8 +812,10 @@ impl Godo {
             (MergeStatus::Unknown, Vec::new())
         };
 
-        // Check if dangling (directory exists but no branch)
-        let is_dangling = has_worktree_dir && !has_branch;
+        // Check if dangling:
+        //  - Git records a worktree but the directory is gone, or
+        //  - A directory exists but no branch backs it.
+        let is_dangling = (has_worktree && !has_worktree_dir) || (has_worktree_dir && !has_branch);
 
         // Check for uncommitted changes (only if worktree exists)
         let (has_uncommitted_changes, diff_stats) = if has_worktree && has_worktree_dir {
@@ -1297,6 +1300,31 @@ mod tests {
         }
 
         assert_eq!(manager.active_connections("box").unwrap(), 0);
+    }
+
+    #[test]
+    fn detects_missing_worktree_directory() {
+        let tmp = tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        fs::create_dir(&repo_dir).unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(&repo_dir)
+            .status()
+            .unwrap();
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+
+        let sandbox_path = manager.sandbox_path("box").unwrap();
+        git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
+
+        fs::remove_dir_all(&sandbox_path).unwrap();
+
+        let sandbox = manager.get_sandbox("box").unwrap().unwrap();
+        assert!(sandbox.is_dangling);
+        assert!(!sandbox.is_live());
     }
 
     #[test]
