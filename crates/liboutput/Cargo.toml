@@ -12,8 +12,8 @@ workspace = true
 
 [dependencies]
 crossterm = { workspace = true }
-dialoguer = { version = "0.12.0", default-features = false }
 indicatif = { workspace = true }
+inquire = "0.9.1"
 termcolor = { workspace = true }
 textwrap = { workspace = true }
 thiserror = { workspace = true }

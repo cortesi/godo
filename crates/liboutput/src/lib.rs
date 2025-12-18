@@ -15,8 +15,8 @@ use std::{
 };
 
 use crossterm::terminal;
-use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
+use inquire::{Confirm, InquireError, Select, ui::RenderConfig};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use thiserror::Error;
 
@@ -230,6 +230,27 @@ impl Terminal {
         }
     }
 
+    /// Build an `inquire` render configuration that matches this terminal's color mode.
+    fn inquire_render_config(&self) -> RenderConfig<'static> {
+        match self.color_choice {
+            ColorChoice::Never => RenderConfig::empty(),
+            ColorChoice::Always | ColorChoice::AlwaysAnsi | ColorChoice::Auto => {
+                RenderConfig::default_colored()
+            }
+        }
+    }
+
+    /// Convert an `inquire` error into an [`OutputError`].
+    fn map_inquire_error(err: InquireError) -> OutputError {
+        match err {
+            InquireError::IO(err) => OutputError::Io(err),
+            InquireError::OperationCanceled | InquireError::OperationInterrupted => {
+                OutputError::Cancelled
+            }
+            other => OutputError::Terminal(other.to_string()),
+        }
+    }
+
     /// Calculate available width for text after accounting for prefix.
     fn available_width(&self) -> usize {
         let prefix_width = self.line_prefix.chars().count();
@@ -419,11 +440,11 @@ impl Output for Terminal {
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
-        Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt(prompt)
-            .default(false)
-            .interact_opt()
-            .map_err(|e| OutputError::Terminal(e.to_string()))?
+        Confirm::new(prompt)
+            .with_default(false)
+            .with_render_config(self.inquire_render_config())
+            .prompt_skippable()
+            .map_err(Self::map_inquire_error)?
             .ok_or(OutputError::Cancelled)
     }
 
@@ -434,12 +455,14 @@ impl Output for Terminal {
             ));
         }
 
-        Select::with_theme(&ColorfulTheme::default())
-            .with_prompt(prompt)
-            .items(&options)
-            .default(0)
-            .interact_opt()
-            .map_err(|e| OutputError::Terminal(e.to_string()))?
+        Select::new(prompt, options)
+            .without_filtering()
+            .with_vim_mode(true)
+            .with_help_message("↑↓/j/k to move, enter to select, esc to cancel")
+            .with_render_config(self.inquire_render_config())
+            .raw_prompt_skippable()
+            .map_err(Self::map_inquire_error)?
+            .map(|answer| answer.index)
             .ok_or(OutputError::Cancelled)
     }
 

@@ -25,6 +25,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+/// Demo subcommands supported by the liboutput presentation harness.
 enum Commands {
     /// Show all message types
     Messages,

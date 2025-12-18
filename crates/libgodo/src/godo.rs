@@ -353,14 +353,19 @@ impl Godo {
         Ok(self.project_dir()?.join(sandbox_name))
     }
 
+    /// Wrapper around `Output::select` that returns `None` if the user cancels.
+    fn prompt_select_opt(&self, prompt: &str, options: Vec<String>) -> Result<Option<usize>> {
+        match self.output.select(prompt, options) {
+            Ok(selection) => Ok(Some(selection)),
+            Err(OutputErr::Cancelled) => Ok(None),
+            Err(other) => Err(GodoError::OutputError(other)),
+        }
+    }
+
     /// Wrapper around `Output::select` that maps cancellation to `UserAborted`.
     fn prompt_select(&self, prompt: &str, options: Vec<String>) -> Result<usize> {
-        self.output
-            .select(prompt, options)
-            .map_err(|err| match err {
-                OutputErr::Cancelled => GodoError::UserAborted,
-                other => GodoError::OutputError(other),
-            })
+        self.prompt_select_opt(prompt, options)?
+            .ok_or(GodoError::UserAborted)
     }
 
     /// Wrapper around `Output::confirm` that maps cancellation to `UserAborted`.
@@ -418,8 +423,11 @@ impl Godo {
             actions.push(PostRunAction::Branch);
         }
 
-        let selection = self.prompt_select(prompt, options)?;
-        Ok(actions[selection].clone())
+        let selection = self.prompt_select_opt(prompt, options)?;
+        match selection {
+            Some(idx) => Ok(actions[idx].clone()),
+            None => Ok(PostRunAction::Shell),
+        }
     }
 
     /// Create or reuse a sandbox and run a command or interactive shell in it.
@@ -1325,6 +1333,99 @@ mod tests {
         let sandbox = manager.get_sandbox("box").unwrap().unwrap();
         assert!(sandbox.is_dangling);
         assert!(!sandbox.is_live());
+    }
+
+    struct CancelOnSelectOutput;
+
+    impl Output for CancelOnSelectOutput {
+        fn message(&self, _msg: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn success(&self, _msg: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn warn(&self, _msg: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn fail(&self, _msg: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn item(&self, _key: &str, _value: &str) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn diff_stat(
+            &self,
+            _label: &str,
+            _insertions: usize,
+            _deletions: usize,
+        ) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn commit(
+            &self,
+            _hash: &str,
+            _subject: &str,
+            _insertions: usize,
+            _deletions: usize,
+        ) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn confirm(&self, _prompt: &str) -> OutputResult<bool> {
+            Ok(false)
+        }
+
+        fn select(&self, _prompt: &str, _options: Vec<String>) -> OutputResult<usize> {
+            Err(liboutput::OutputError::Cancelled)
+        }
+
+        fn finish(&self) -> OutputResult<()> {
+            Ok(())
+        }
+
+        fn section(&self, _header: &str) -> Box<dyn Output> {
+            Box::new(Self)
+        }
+
+        fn spinner(&self, _msg: &str) -> Box<dyn Spinner> {
+            Box::new(QuietSpinner)
+        }
+    }
+
+    struct QuietSpinner;
+
+    impl Spinner for QuietSpinner {
+        fn finish_success(self: Box<Self>, _msg: &str) {}
+
+        fn finish_fail(self: Box<Self>, _msg: &str) {}
+
+        fn finish_clear(self: Box<Self>) {}
+    }
+
+    #[test]
+    fn cancel_in_post_run_action_reopens_shell() {
+        let tmp = tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        fs::create_dir(&repo_dir).unwrap();
+
+        Command::new("git")
+            .arg("init")
+            .current_dir(&repo_dir)
+            .status()
+            .unwrap();
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(CancelOnSelectOutput);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, false).unwrap();
+
+        let action = manager.prompt_for_action(&repo_dir, "box").unwrap();
+        assert!(matches!(action, PostRunAction::Shell));
     }
 
     #[test]
