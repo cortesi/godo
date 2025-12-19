@@ -514,7 +514,11 @@ fn upstream_of(repo_path: &Path, branch_name: &str) -> Result<Option<String>> {
 }
 
 /// Discover a reasonable default integration target for the repository.
-fn default_integration_target(repo_path: &Path) -> Result<Option<String>> {
+///
+/// Checks, in order:
+/// 1. The remote HEAD reference (`refs/remotes/origin/HEAD`)
+/// 2. The configured `init.defaultBranch` setting
+pub fn default_integration_target(repo_path: &Path) -> Result<Option<String>> {
     if let Ok(output) = run_git(
         repo_path,
         &[

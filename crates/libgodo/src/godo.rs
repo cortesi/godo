@@ -234,8 +234,8 @@ impl Sandbox {
     }
 }
 
-/// Target ref used when falling back to merge-base for diff resolution.
-const DIFF_MERGE_BASE_TARGET: &str = "origin/main";
+/// Hardcoded fallback targets when dynamic detection fails.
+const FALLBACK_TARGETS: &[&str] = &["origin/main", "origin/master", "main", "master"];
 
 /// Map git errors into a `GodoError::GitError`.
 fn git_error(error: &anyhow::Error) -> GodoError {
@@ -906,11 +906,9 @@ impl Godo {
         let sandbox_path = self.sandbox_path(sandbox_name)?;
         let base = self.resolve_base_commit(sandbox_name, base_override)?;
 
-        if base.used_fallback {
-            let target = base
-                .fallback_target
-                .as_deref()
-                .unwrap_or(DIFF_MERGE_BASE_TARGET);
+        if base.used_fallback
+            && let Some(target) = &base.fallback_target
+        {
             self.output.warn(&format!(
                 "Recorded base commit missing; using merge-base with {target}"
             ))?;
@@ -977,14 +975,25 @@ impl Godo {
             Err(_) => {
                 let branch = branch_name(sandbox_name);
                 let mut candidates = Vec::new();
+
+                // First priority: the recorded base_ref from metadata
                 if let Some(base_ref) = metadata.base_ref.as_ref() {
                     candidates.push(base_ref.clone());
                 }
-                if !candidates
-                    .iter()
-                    .any(|candidate| candidate == DIFF_MERGE_BASE_TARGET)
+
+                // Second priority: dynamically detected default integration target
+                if let Ok(Some(default_target)) = git::default_integration_target(&self.repo_dir)
+                    && !candidates.contains(&default_target)
                 {
-                    candidates.push(DIFF_MERGE_BASE_TARGET.to_string());
+                    candidates.push(default_target);
+                }
+
+                // Third priority: hardcoded fallbacks for common branch names
+                for fallback in FALLBACK_TARGETS {
+                    let fallback_str = (*fallback).to_string();
+                    if !candidates.contains(&fallback_str) {
+                        candidates.push(fallback_str);
+                    }
                 }
 
                 let mut last_error = None;
@@ -1664,13 +1673,20 @@ mod tests {
             .unwrap();
 
         let resolved = manager.resolve_base_commit("box", None).unwrap();
-        let expected =
-            git::merge_base(&repo_dir, &branch_name("box"), DIFF_MERGE_BASE_TARGET).unwrap();
-        assert_eq!(resolved.commit, expected);
+        // Should fallback to merge-base with a detected integration target
+        // (could be "main", "origin/main", etc. depending on git config)
         assert!(resolved.used_fallback);
-        assert_eq!(
-            resolved.fallback_target.as_deref(),
-            Some(DIFF_MERGE_BASE_TARGET)
+        let target = resolved.fallback_target.as_deref().unwrap();
+
+        // Verify the commit matches what merge-base would return for that target
+        let expected = git::merge_base(&repo_dir, &branch_name("box"), target).unwrap();
+        assert_eq!(resolved.commit, expected);
+
+        // Verify the target is one of the expected candidates
+        let valid_targets = ["main", "master", "origin/main", "origin/master"];
+        assert!(
+            valid_targets.contains(&target),
+            "unexpected fallback target: {target}"
         );
     }
 
