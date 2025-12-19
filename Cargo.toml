@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 description = "Fast, parallel sandboxes for any Git project"
@@ -23,8 +23,7 @@ termcolor = "1.4.1"
 textwrap = "0.16"
 thiserror = "2.0"
 tempfile = "3.23"
-libgodo = { version = "0.0.1", path = "crates/libgodo" }
-liboutput = { version = "0.0.1", path = "crates/liboutput" }
+libgodo = { version = "0.0.2", path = "crates/libgodo" }
 fs4 = "0.8"
 reflink-copy = "0.1"
 sysinfo = "0.30"

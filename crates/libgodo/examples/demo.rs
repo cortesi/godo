@@ -1,19 +1,17 @@
-//! Test harness for exercising liboutput presentation.
+//! Test harness for exercising output presentation.
 //!
 //! This tool provides a way to visually test and iterate on output formatting
 //! without running the full godo application.
-//!
-//! Run with: `cargo run --example demo -- <command>`
 
 use std::{thread::sleep, time::Duration};
 
 use clap::{Parser, Subcommand};
-use liboutput::{Output, Terminal};
+use libgodo::{Output, Terminal};
 
-/// Test harness for liboutput presentation
+/// Test harness for output presentation
 #[derive(Parser)]
 #[command(name = "demo")]
-#[command(about = "Exercise liboutput presentation features")]
+#[command(about = "Exercise output presentation features")]
 struct Cli {
     /// Disable colors in output
     #[arg(long)]
@@ -25,7 +23,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-/// Demo subcommands supported by the liboutput presentation harness.
+/// Demo subcommands supported by the output presentation harness.
 enum Commands {
     /// Show all message types
     Messages,
@@ -249,7 +247,7 @@ fn main() {
         Some(Commands::List) => demo_list(&output),
         Some(Commands::All) => demo_all(&output),
         None => {
-            println!("demo: Test harness for liboutput\n");
+            println!("demo: Test harness for output\n");
             println!("Run with --help for usage information.\n");
             // Quick preview
             demo_messages(&output);

@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 #![deny(missing_docs)]
 #![deny(rustdoc::missing_crate_level_docs)]
 //! Core library for managing ephemeral Git worktrees ("sandboxes") used by godo.
@@ -12,10 +13,12 @@ mod git;
 mod godo;
 /// Sandbox metadata persistence helpers.
 mod metadata;
+/// Terminal output abstractions and implementations.
+mod output;
 /// Lightweight session tracking for concurrent godo runs.
 mod session;
 
 /// Re-export of the main manager type and its error.
 pub use godo::{Godo, GodoError};
 /// Re-exports for output abstraction and concrete implementations.
-pub use liboutput::{Output, OutputError, Quiet, Terminal};
+pub use output::{Output, OutputError, Quiet, Spinner, Terminal};

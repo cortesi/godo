@@ -10,12 +10,12 @@ use std::{
 };
 
 use clonetree::{Options, clone_tree};
-use liboutput::{Output, OutputError as OutputErr};
 use thiserror::Error;
 
 use crate::{
     git::{self, MergeStatus},
     metadata::{SandboxMetadata, SandboxMetadataStore},
+    output::{Output, OutputError as OutputErr},
     session::{LEASE_DIR_NAME, ReleaseOutcome, SessionManager},
 };
 
@@ -1445,11 +1445,13 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use liboutput::{Output, Quiet, Result as OutputResult, Spinner};
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::session::{ReleaseOutcome, SessionManager};
+    use crate::{
+        output::{Output, OutputError, Quiet, Result as OutputResult, Spinner},
+        session::{ReleaseOutcome, SessionManager},
+    };
 
     struct DirGuard {
         original: PathBuf,
@@ -1804,7 +1806,7 @@ mod tests {
         }
 
         fn select(&self, _prompt: &str, _options: Vec<String>) -> OutputResult<usize> {
-            Err(liboutput::OutputError::Cancelled)
+            Err(OutputError::Cancelled)
         }
 
         fn finish(&self) -> OutputResult<()> {

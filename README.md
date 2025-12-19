@@ -1,6 +1,5 @@
 ![Discord](https://img.shields.io/discord/1381424110831145070?style=flat-square&logo=rust&link=https%3A%2F%2Fdiscord.gg%2FfHmRmuBDxF)
 [![Crates.io](https://img.shields.io/crates/v/godo)](https://crates.io/crates/godo)
-[![docs.rs](https://img.shields.io/docsrs/godo)](https://docs.rs/godo)
 
 
 # godo
