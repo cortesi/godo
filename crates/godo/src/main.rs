@@ -88,8 +88,8 @@ enum Commands {
 
     /// Diff a sandbox against its recorded base commit
     Diff {
-        /// Name of the sandbox to diff
-        name: String,
+        /// Name of the sandbox to diff (auto-detected if running from within a sandbox)
+        name: Option<String>,
 
         /// Override the base commit used for diffing
         #[arg(long, value_name = "COMMIT")]
@@ -132,19 +132,38 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Check if the current working directory is inside a godo sandbox.
-fn is_inside_godo_sandbox(godo_dir: &Path) -> Result<bool> {
+/// If running from within a godo sandbox, returns the sandbox name.
+/// Returns None if not in a sandbox.
+fn current_sandbox_name(godo_dir: &Path) -> Result<Option<String>> {
     let current_dir = env::current_dir()?;
-    let canonical_godo_dir = godo_dir
+    let canonical_godo = godo_dir
         .canonicalize()
         .unwrap_or_else(|_| godo_dir.to_path_buf());
 
-    // Check if current directory is under the godo directory
-    if let Ok(canonical_current) = current_dir.canonicalize() {
-        return Ok(canonical_current.starts_with(&canonical_godo_dir));
+    let canonical_cwd = match current_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+
+    let relative = match canonical_cwd.strip_prefix(&canonical_godo) {
+        Ok(rel) => rel,
+        Err(_) => return Ok(None), // Not in godo dir
+    };
+
+    let components: Vec<_> = relative.components().collect();
+    if components.len() < 2 {
+        return Ok(None); // In godo dir but not in a sandbox
     }
 
-    Ok(false)
+    // components[0] = project, components[1] = sandbox
+    let sandbox_name = components[1].as_os_str().to_string_lossy().to_string();
+
+    // Filter out meta-directories
+    if sandbox_name.starts_with(".godo-") {
+        return Ok(None);
+    }
+
+    Ok(Some(sandbox_name))
 }
 
 fn main() -> Result<()> {
@@ -223,9 +242,53 @@ fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
         expand_tilde(DEFAULT_GODO_DIR)
     };
 
-    // Check if we're running from inside a godo sandbox
-    if is_inside_godo_sandbox(&godo_dir)? {
-        anyhow::bail!("Cannot run godo from within a godo sandbox");
+    // Detect if we're running from within a sandbox
+    let current_sandbox = current_sandbox_name(&godo_dir)?;
+
+    // Per-command sandbox context checks
+    match &cli.command {
+        Commands::List => {
+            // Always allowed - read-only operation
+        }
+        Commands::Diff { .. } => {
+            // Always allowed - read-only operation
+        }
+        Commands::Run { name, .. } => {
+            if let Some(ref current) = current_sandbox
+                && current == name
+            {
+                anyhow::bail!(
+                    "Cannot run sandbox '{}' from within itself. Exit the sandbox first.",
+                    name
+                );
+            }
+        }
+        Commands::Remove { name, .. } => {
+            if let Some(ref current) = current_sandbox
+                && current == name
+            {
+                anyhow::bail!(
+                    "Cannot remove sandbox '{}' while inside it. Exit the sandbox first.",
+                    name
+                );
+            }
+        }
+        Commands::Clean { name } => {
+            if let Some(ref current) = current_sandbox {
+                if name.is_none() {
+                    anyhow::bail!(
+                        "Cannot run 'godo clean' (all sandboxes) from within a sandbox. \
+                         Exit the sandbox first, or specify a sandbox name."
+                    );
+                }
+                if name.as_ref() == Some(current) {
+                    anyhow::bail!(
+                        "Cannot clean sandbox '{}' while inside it. Exit the sandbox first.",
+                        current
+                    );
+                }
+            }
+        }
     }
 
     // Determine repository directory
@@ -255,7 +318,14 @@ fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
             pager,
             no_pager,
         } => {
-            godo.diff(&name, base.as_deref(), pager, no_pager)?;
+            // Auto-detect sandbox name if not provided and we're inside a sandbox
+            let effective_name = match name {
+                Some(n) => n,
+                None => current_sandbox.ok_or_else(|| {
+                    anyhow::anyhow!("No sandbox name provided and not inside a sandbox")
+                })?,
+            };
+            godo.diff(&effective_name, base.as_deref(), pager, no_pager)?;
         }
         Commands::Remove { name, force } => {
             godo.remove(&name, force)?;

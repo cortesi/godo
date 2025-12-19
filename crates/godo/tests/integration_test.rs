@@ -1,9 +1,9 @@
 mod common;
 
+use std::{fs, process::Command};
+
 use anyhow::Result;
 use common::{create_repo, git, godo_binary, run_godo};
-use std::fs;
-use std::process::Command;
 use tempfile::TempDir;
 
 #[test]
@@ -36,7 +36,7 @@ fn test_project_directory_structure() -> Result<()> {
 
 #[test]
 fn test_project_name_cleaning() -> Result<()> {
-    let (temp_dir, repo_path) = create_repo("test.project@2024")?;
+    let (_temp_dir, repo_path) = create_repo("test.project@2024")?;
     let godo_dir = TempDir::new()?;
 
     // Run godo with --keep flag
@@ -93,11 +93,7 @@ fn test_clean_command_section_output() -> Result<()> {
     assert!(output.status.success());
 
     // Now run clean command on all sandboxes
-    let output = run_godo(
-        &repo_path,
-        godo_dir.path(),
-        &["--no-prompt", "clean"],
-    )?;
+    let output = run_godo(&repo_path, godo_dir.path(), &["--no-prompt", "clean"])?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -131,11 +127,7 @@ fn test_clean_command_section_output() -> Result<()> {
 
     // Clean up remaining sandboxes
     for sandbox in ["clean-sandbox", "dirty-sandbox", "another-clean"] {
-        let _ = run_godo(
-            &repo_path,
-            godo_dir.path(),
-            &["remove", "--force", sandbox],
-        );
+        let _ = run_godo(&repo_path, godo_dir.path(), &["remove", "--force", sandbox]);
     }
 
     Ok(())
@@ -278,7 +270,10 @@ fn test_sandbox_run_other_allowed() -> Result<()> {
         godo_dir.path(),
         &["run", "--keep", "sandbox-one", "echo", "test"],
     )?;
-    assert!(output.status.success(), "Creating sandbox-one should succeed");
+    assert!(
+        output.status.success(),
+        "Creating sandbox-one should succeed"
+    );
 
     let project_dir = godo_dir.path().join("test-project");
     let sandbox_one_dir = project_dir.join("sandbox-one");
@@ -571,7 +566,14 @@ fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
     let output = run_godo(
         &repo_path,
         godo_dir.path(),
-        &["--no-prompt", "run", "--keep", "test-sandbox", "echo", "test"],
+        &[
+            "--no-prompt",
+            "run",
+            "--keep",
+            "test-sandbox",
+            "echo",
+            "test",
+        ],
     )?;
 
     if !output.status.success() {
