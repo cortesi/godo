@@ -3,9 +3,10 @@ use std::{
     env, fs, io,
     os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     result::Result as StdResult,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use clonetree::{Options, clone_tree};
@@ -14,7 +15,8 @@ use thiserror::Error;
 
 use crate::{
     git::{self, MergeStatus},
-    session::{ReleaseOutcome, SessionManager},
+    metadata::{SandboxMetadata, SandboxMetadataStore},
+    session::{LEASE_DIR_NAME, ReleaseOutcome, SessionManager},
 };
 
 /// Custom Result type for Godo operations.
@@ -51,6 +53,19 @@ pub enum GodoError {
     #[error("Operation failed: {0}")]
     OperationError(String),
 
+    /// A git command failed.
+    #[error("Git error: {0}")]
+    GitError(String),
+
+    /// Base commit resolution failed for a sandbox.
+    #[error("Base commit error for sandbox '{name}': {message}")]
+    BaseError {
+        /// Name of the sandbox associated with the failure.
+        name: String,
+        /// Human-readable error description.
+        message: String,
+    },
+
     /// The selected output backend reported an error.
     #[error("Output operation failed: {0}")]
     OutputError(#[from] OutputErr),
@@ -58,6 +73,20 @@ pub enum GodoError {
     /// An underlying I/O operation failed.
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
+}
+
+impl GodoError {
+    /// Return the recommended process exit code for this error.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::CommandExit { code } => *code,
+            Self::UserAborted => 130,
+            Self::SandboxError { .. } => 2,
+            Self::BaseError { .. } => 3,
+            Self::GitError(_) => 4,
+            _ => 1,
+        }
+    }
 }
 
 /// Follow-up action to take after executing a sandboxed command.
@@ -205,6 +234,50 @@ impl Sandbox {
     }
 }
 
+/// Target ref used when falling back to merge-base for diff resolution.
+const DIFF_MERGE_BASE_TARGET: &str = "origin/main";
+
+/// Map git errors into a `GodoError::GitError`.
+fn git_error(error: &anyhow::Error) -> GodoError {
+    GodoError::GitError(error.to_string())
+}
+
+/// Outcome of resolving a sandbox base commit.
+struct BaseResolution {
+    /// Resolved commit hash.
+    commit: String,
+    /// Whether a merge-base fallback was used.
+    used_fallback: bool,
+    /// The target ref used for merge-base fallback, when applicable.
+    fallback_target: Option<String>,
+}
+
+/// Pager configuration for diff commands.
+struct DiffPager {
+    /// Pager command override, if any.
+    pager: Option<String>,
+    /// Whether paging is disabled.
+    no_pager: bool,
+}
+
+impl DiffPager {
+    /// Create a new pager configuration.
+    fn new(pager: Option<String>, no_pager: bool) -> Self {
+        Self { pager, no_pager }
+    }
+
+    /// Apply pager arguments to a git command.
+    fn apply(&self, command: &mut Command) {
+        if self.no_pager {
+            command.arg("--no-pager");
+        }
+        if let Some(pager) = &self.pager {
+            command.arg("-c");
+            command.arg(format!("core.pager={pager}"));
+        }
+    }
+}
+
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
 fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -296,7 +369,9 @@ pub struct Godo {
 
 impl Godo {
     /// Directory under the project root reserved for godo's internal bookkeeping.
-    const META_DIR: &'static str = ".godo-leases";
+    const LEASE_DIR: &'static str = LEASE_DIR_NAME;
+    /// Directory under the project root reserved for sandbox metadata.
+    const METADATA_DIR: &'static str = SandboxMetadataStore::DIR_NAME;
     /// Create a new [`Godo`] manager.
     ///
     /// - `godo_dir`: directory where project sandboxes are stored
@@ -353,6 +428,41 @@ impl Godo {
         Ok(self.project_dir()?.join(sandbox_name))
     }
 
+    /// Build a metadata store for the current project.
+    fn metadata_store(&self) -> Result<SandboxMetadataStore> {
+        Ok(SandboxMetadataStore::new(&self.project_dir()?))
+    }
+
+    /// Persist metadata for a newly created sandbox.
+    fn record_metadata(
+        &self,
+        sandbox_name: &str,
+        base_commit: String,
+        base_ref: Option<String>,
+    ) -> Result<()> {
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let metadata = SandboxMetadata {
+            base_commit,
+            base_ref,
+            created_at,
+        };
+        self.metadata_store()?
+            .write(sandbox_name, &metadata)
+            .map_err(|e| GodoError::OperationError(format!("Metadata error: {e}")))?;
+        Ok(())
+    }
+
+    /// Remove metadata for a sandbox if present.
+    fn remove_metadata(&self, sandbox_name: &str) -> Result<()> {
+        self.metadata_store()?
+            .remove(sandbox_name)
+            .map_err(|e| GodoError::OperationError(format!("Metadata error: {e}")))?;
+        Ok(())
+    }
+
     /// Wrapper around `Output::select` that returns `None` if the user cancels.
     fn prompt_select_opt(&self, prompt: &str, options: Vec<String>) -> Result<Option<usize>> {
         match self.output.select(prompt, options) {
@@ -379,8 +489,8 @@ impl Godo {
     /// Prompt the user for what to do after command execution
     fn prompt_for_action(&self, sandbox_path: &Path, sandbox_name: &str) -> Result<PostRunAction> {
         // Check current state
-        let has_uncommitted = git::has_uncommitted_changes(sandbox_path)
-            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+        let has_uncommitted =
+            git::has_uncommitted_changes(sandbox_path).map_err(|e| git_error(&e))?;
 
         let branch = branch_name(sandbox_name);
         let merge_status =
@@ -476,9 +586,7 @@ impl Godo {
         } else {
             // Sandbox doesn't exist, create it
             // Check for uncommitted changes
-            if git::has_uncommitted_changes(&self.repo_dir)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
-            {
+            if git::has_uncommitted_changes(&self.repo_dir).map_err(|e| git_error(&e))? {
                 self.output.warn("You have uncommitted changes.")?;
 
                 if !self.no_prompt {
@@ -504,12 +612,15 @@ impl Godo {
             let project_dir = self.project_dir()?;
             fs::create_dir_all(&project_dir)?;
 
+            let base_commit = git::rev_parse(&self.repo_dir, "HEAD").map_err(|e| git_error(&e))?;
+            let base_ref = git::head_ref(&self.repo_dir).map_err(|e| git_error(&e))?;
+
             let branch = branch_name(sandbox_name);
             self.output.message(&format!(
                 "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
             ))?;
             git::create_worktree(&self.repo_dir, &sandbox_path, &branch)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+                .map_err(|e| git_error(&e))?;
 
             let spinner = self.output.spinner("Cloning tree to sandbox...");
 
@@ -584,14 +695,14 @@ impl Godo {
             // If user chose to use clean branch, reset the sandbox to remove uncommitted changes
             if use_clean_branch {
                 self.output.message("Resetting sandbox to clean state...")?;
-                git::reset_hard(&sandbox_path).map_err(|e| {
-                    GodoError::OperationError(format!("Failed to reset sandbox: {e}"))
-                })?;
-                git::clean(&sandbox_path).map_err(|e| {
-                    GodoError::OperationError(format!("Failed to clean sandbox: {e}"))
-                })?;
+                git::reset_hard(&sandbox_path)
+                    .map_err(|e| GodoError::GitError(format!("Failed to reset sandbox: {e}")))?;
+                git::clean(&sandbox_path)
+                    .map_err(|e| GodoError::GitError(format!("Failed to clean sandbox: {e}")))?;
                 self.output.success("Sandbox is now in a clean state")?;
             }
+
+            self.record_metadata(sandbox_name, base_commit, base_ref)?;
         }
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
@@ -669,11 +780,9 @@ impl Godo {
         if let Some(commit_message) = commit {
             self.output.message("Staging and committing changes...")?;
             // Stage all changes
-            git::add_all(&sandbox_path)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+            git::add_all(&sandbox_path).map_err(|e| git_error(&e))?;
             // Commit with the provided message
-            git::commit(&sandbox_path, &commit_message)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+            git::commit(&sandbox_path, &commit_message).map_err(|e| git_error(&e))?;
             self.output
                 .success(&format!("Committed with message: {commit_message}"))?;
             // Clean up after commit
@@ -693,13 +802,9 @@ impl Godo {
                         PostRunAction::Commit => {
                             self.output.message("Staging and committing changes...")?;
                             // Stage all changes
-                            git::add_all(&sandbox_path).map_err(|e| {
-                                GodoError::OperationError(format!("Git operation failed: {e}"))
-                            })?;
+                            git::add_all(&sandbox_path).map_err(|e| git_error(&e))?;
                             // Commit with verbose flag
-                            git::commit_interactive(&sandbox_path).map_err(|e| {
-                                GodoError::OperationError(format!("Git operation failed: {e}"))
-                            })?;
+                            git::commit_interactive(&sandbox_path).map_err(|e| git_error(&e))?;
                             // Clean up after commit
                             self.cleanup_sandbox(sandbox_name)?;
                             break; // Exit the loop after commit
@@ -741,9 +846,8 @@ impl Godo {
                             self.output
                                 .message("Keeping branch but removing worktree...")?;
                             // Remove only the worktree, keeping the branch
-                            git::remove_worktree(&self.repo_dir, &sandbox_path, true).map_err(
-                                |e| GodoError::OperationError(format!("Git operation failed: {e}")),
-                            )?;
+                            git::remove_worktree(&self.repo_dir, &sandbox_path, true)
+                                .map_err(|e| git_error(&e))?;
                             if sandbox_path.exists() {
                                 fs::remove_dir_all(&sandbox_path).map_err(|e| {
                                     GodoError::OperationError(format!(
@@ -751,6 +855,7 @@ impl Godo {
                                     ))
                                 })?;
                             }
+                            self.remove_metadata(sandbox_name)?;
                             let branch = branch_name(sandbox_name);
                             self.output
                                 .success(&format!("Worktree removed, branch {branch} kept"))?;
@@ -764,18 +869,193 @@ impl Godo {
         Ok(())
     }
 
+    /// Diff a sandbox against its recorded base commit.
+    pub fn diff(
+        &self,
+        sandbox_name: &str,
+        base_override: Option<&str>,
+        pager: Option<String>,
+        no_pager: bool,
+    ) -> Result<()> {
+        validate_sandbox_name(sandbox_name)?;
+
+        if no_pager && pager.is_some() {
+            return Err(GodoError::OperationError(
+                "Cannot combine --pager with --no-pager".to_string(),
+            ));
+        }
+
+        let sandbox = match self.get_sandbox(sandbox_name)? {
+            Some(status) => status,
+            None => {
+                return Err(GodoError::SandboxError {
+                    name: sandbox_name.to_string(),
+                    message: "does not exist".to_string(),
+                });
+            }
+        };
+
+        if !sandbox.is_live() {
+            let status = sandbox.component_status();
+            return Err(GodoError::SandboxError {
+                name: sandbox_name.to_string(),
+                message: format!("exists but is not live - remove it first ({status})"),
+            });
+        }
+
+        let sandbox_path = self.sandbox_path(sandbox_name)?;
+        let base = self.resolve_base_commit(sandbox_name, base_override)?;
+
+        if base.used_fallback {
+            let target = base
+                .fallback_target
+                .as_deref()
+                .unwrap_or(DIFF_MERGE_BASE_TARGET);
+            self.output.warn(&format!(
+                "Recorded base commit missing; using merge-base with {target}"
+            ))?;
+        }
+
+        let pager = DiffPager::new(pager, no_pager);
+
+        let tracked_args = vec!["diff".to_string(), base.commit];
+        self.run_git_diff_command(&sandbox_path, &pager, &tracked_args)?;
+
+        let untracked = git::untracked_files(&sandbox_path).map_err(|e| git_error(&e))?;
+        for path in untracked {
+            let diff_args = vec![
+                "diff".to_string(),
+                "--no-index".to_string(),
+                "--".to_string(),
+                "/dev/null".to_string(),
+                path.to_string_lossy().to_string(),
+            ];
+            self.run_git_diff_command(&sandbox_path, &pager, &diff_args)?;
+        }
+
+        Ok(())
+    }
+
+    /// Resolve the base commit for a sandbox diff.
+    fn resolve_base_commit(
+        &self,
+        sandbox_name: &str,
+        base_override: Option<&str>,
+    ) -> Result<BaseResolution> {
+        if let Some(base) = base_override {
+            let commit =
+                git::rev_parse(&self.repo_dir, base).map_err(|e| GodoError::BaseError {
+                    name: sandbox_name.to_string(),
+                    message: format!("override '{base}' could not be resolved: {e}"),
+                })?;
+            return Ok(BaseResolution {
+                commit,
+                used_fallback: false,
+                fallback_target: None,
+            });
+        }
+
+        let metadata =
+            self.metadata_store()?
+                .read(sandbox_name)
+                .map_err(|e| GodoError::BaseError {
+                    name: sandbox_name.to_string(),
+                    message: format!("metadata unreadable: {e}"),
+                })?;
+
+        let metadata = metadata.ok_or_else(|| GodoError::BaseError {
+            name: sandbox_name.to_string(),
+            message: "metadata missing for sandbox".to_string(),
+        })?;
+
+        match git::rev_parse(&self.repo_dir, &metadata.base_commit) {
+            Ok(commit) => Ok(BaseResolution {
+                commit,
+                used_fallback: false,
+                fallback_target: None,
+            }),
+            Err(_) => {
+                let branch = branch_name(sandbox_name);
+                let mut candidates = Vec::new();
+                if let Some(base_ref) = metadata.base_ref.as_ref() {
+                    candidates.push(base_ref.clone());
+                }
+                if !candidates
+                    .iter()
+                    .any(|candidate| candidate == DIFF_MERGE_BASE_TARGET)
+                {
+                    candidates.push(DIFF_MERGE_BASE_TARGET.to_string());
+                }
+
+                let mut last_error = None;
+                for target in candidates {
+                    match git::merge_base(&self.repo_dir, &branch, &target) {
+                        Ok(commit) => {
+                            return Ok(BaseResolution {
+                                commit,
+                                used_fallback: true,
+                                fallback_target: Some(target),
+                            });
+                        }
+                        Err(error) => last_error = Some((target, error)),
+                    }
+                }
+
+                let message = if let Some((target, error)) = last_error {
+                    format!("recorded base missing and merge-base failed for {target}: {error}")
+                } else {
+                    "recorded base missing and merge-base failed".to_string()
+                };
+
+                Err(GodoError::BaseError {
+                    name: sandbox_name.to_string(),
+                    message,
+                })
+            }
+        }
+    }
+
+    /// Run a git diff command, treating exit codes 0 and 1 as success.
+    fn run_git_diff_command(
+        &self,
+        sandbox_path: &Path,
+        pager: &DiffPager,
+        args: &[String],
+    ) -> Result<()> {
+        let mut command = Command::new("git");
+        command.current_dir(sandbox_path);
+        pager.apply(&mut command);
+        command.args(args);
+        command.stdin(Stdio::inherit());
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+
+        let status = command.status().map_err(|e| {
+            GodoError::GitError(format!("Failed to run git {}: {e}", args.join(" ")))
+        })?;
+
+        match status.code() {
+            Some(0) | Some(1) => Ok(()),
+            Some(code) => Err(GodoError::GitError(format!(
+                "Git diff failed with exit code {code}"
+            ))),
+            None => Err(GodoError::GitError(
+                "Git diff terminated by signal".to_string(),
+            )),
+        }
+    }
+
     /// Get the status of a sandbox by name
     fn get_sandbox(&self, name: &str) -> Result<Option<Sandbox>> {
         let sandbox_path = self.sandbox_path(name)?;
         let branch_name = branch_name(name);
 
         // Check if branch exists
-        let has_branch = git::has_branch(&self.repo_dir, &branch_name)
-            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+        let has_branch =
+            git::has_branch(&self.repo_dir, &branch_name).map_err(|e| git_error(&e))?;
 
         // Get all worktrees to check if this sandbox has a worktree attached in the godo directory
-        let worktrees = git::list_worktrees(&self.repo_dir)
-            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+        let worktrees = git::list_worktrees(&self.repo_dir).map_err(|e| git_error(&e))?;
         let matching_worktree = worktrees.iter().find(|w| w.path == sandbox_path);
 
         let has_worktree = matching_worktree.is_some();
@@ -860,17 +1140,14 @@ impl Godo {
 
         let mut all_names = HashSet::new();
 
-        let all_branches = git::list_branches(&self.repo_dir)
-            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+        let all_branches = git::list_branches(&self.repo_dir).map_err(|e| git_error(&e))?;
         for branch in &all_branches {
             if let Some(name) = branch.strip_prefix("godo/") {
                 all_names.insert(name.to_string());
             }
         }
 
-        for worktree in git::list_worktrees(&self.repo_dir)
-            .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?
-        {
+        for worktree in git::list_worktrees(&self.repo_dir).map_err(|e| git_error(&e))? {
             if let Some(branch) = &worktree.branch {
                 let branch = branch.strip_prefix("refs/heads/").unwrap_or(branch);
                 if let Some(name) = branch.strip_prefix("godo/") {
@@ -884,7 +1161,7 @@ impl Godo {
                 let entry = entry?;
                 if entry.file_type()?.is_dir() {
                     let dir_name = entry.file_name().to_string_lossy().to_string();
-                    if dir_name == Self::META_DIR {
+                    if dir_name == Self::LEASE_DIR || dir_name == Self::METADATA_DIR {
                         continue;
                     }
                     all_names.insert(dir_name);
@@ -1051,11 +1328,12 @@ impl Godo {
 
         let mut worktree_removed = false;
         let mut branch_removed = false;
+        let mut directory_removed = false;
 
         // Remove the worktree if it exists and has no uncommitted changes
         if status.has_worktree && !status.has_uncommitted_changes {
             git::remove_worktree(&self.repo_dir, &sandbox_path, false)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+                .map_err(|e| git_error(&e))?;
             section.message("removed unmodified worktree")?;
             worktree_removed = true;
         } else if status.has_worktree && status.has_uncommitted_changes {
@@ -1067,6 +1345,7 @@ impl Godo {
             fs::remove_dir_all(&sandbox_path).map_err(|e| {
                 GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
             })?;
+            directory_removed = true;
         }
 
         // Only remove the branch if:
@@ -1077,9 +1356,12 @@ impl Godo {
             && matches!(status.merge_status, MergeStatus::Clean)
             && (worktree_removed || (!status.has_worktree && !status.has_worktree_dir))
         {
-            git::delete_branch(&self.repo_dir, &branch, false)
-                .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+            git::delete_branch(&self.repo_dir, &branch, false).map_err(|e| git_error(&e))?;
             branch_removed = true;
+        }
+
+        if worktree_removed || branch_removed || directory_removed {
+            self.remove_metadata(name)?;
         }
 
         // Report what was done
@@ -1125,7 +1407,7 @@ impl Godo {
         let result: Result<()> = (|| {
             if status.has_worktree {
                 git::remove_worktree(&self.repo_dir, &sandbox_path, true)
-                    .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+                    .map_err(|e| git_error(&e))?;
             }
             if sandbox_path.exists() {
                 fs::remove_dir_all(&sandbox_path).map_err(|e| {
@@ -1133,9 +1415,9 @@ impl Godo {
                 })?;
             }
             if status.has_branch {
-                git::delete_branch(&self.repo_dir, &branch, true)
-                    .map_err(|e| GodoError::OperationError(format!("Git operation failed: {e}")))?;
+                git::delete_branch(&self.repo_dir, &branch, true).map_err(|e| git_error(&e))?;
             }
+            self.remove_metadata(name)?;
             Ok(())
         })();
 
@@ -1164,7 +1446,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use liboutput::{Output, Quiet, Result as OutputResult, Spinner};
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     use super::*;
     use crate::session::{ReleaseOutcome, SessionManager};
@@ -1185,6 +1467,41 @@ mod tests {
         fn drop(&mut self) {
             env::set_current_dir(&self.original).unwrap();
         }
+    }
+
+    fn run_git(repo_dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(repo_dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
+    fn init_repo(repo_dir: &Path) {
+        fs::create_dir_all(repo_dir).unwrap();
+        run_git(repo_dir, &["init", "-b", "main"]);
+        run_git(repo_dir, &["config", "user.email", "test@example.com"]);
+        run_git(repo_dir, &["config", "user.name", "Test User"]);
+        fs::write(repo_dir.join("README.md"), "base").unwrap();
+        run_git(repo_dir, &["add", "README.md"]);
+        run_git(repo_dir, &["commit", "-m", "Initial commit"]);
+    }
+
+    fn init_repo_with_origin(tmp: &TempDir) -> (PathBuf, PathBuf) {
+        let origin_dir = tmp.path().join("origin.git");
+        fs::create_dir_all(&origin_dir).unwrap();
+        run_git(&origin_dir, &["init", "--bare"]);
+
+        let repo_dir = tmp.path().join("repo");
+        init_repo(&repo_dir);
+        run_git(
+            &repo_dir,
+            &["remote", "add", "origin", origin_dir.to_str().unwrap()],
+        );
+        run_git(&repo_dir, &["push", "-u", "origin", "main"]);
+
+        (repo_dir, origin_dir)
     }
 
     #[test]
@@ -1264,29 +1581,134 @@ mod tests {
     }
 
     #[test]
-    fn meta_dir_is_not_listed_as_sandbox() {
+    fn internal_dirs_are_not_listed_as_sandbox() {
         let tmp = tempdir().unwrap();
         let repo_dir = tmp.path().join("repo");
-        fs::create_dir(&repo_dir).unwrap();
-        // Minimal git init so Godo::new accepts the repo
-        Command::new("git")
-            .arg("init")
-            .current_dir(&repo_dir)
-            .status()
-            .unwrap();
+        init_repo(&repo_dir);
 
         let godo_dir = tmp.path().join("godo");
         let output: Arc<dyn Output> = Arc::new(Quiet);
         let manager = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
 
-        // Create project dir and meta dir inside it
+        // Create project dir and internal dirs inside it
         let project_dir = manager.project_dir().unwrap();
-        fs::create_dir_all(project_dir.join(Godo::META_DIR)).unwrap();
+        fs::create_dir_all(project_dir.join(Godo::LEASE_DIR)).unwrap();
+        fs::create_dir_all(project_dir.join(Godo::METADATA_DIR)).unwrap();
         fs::create_dir_all(project_dir.join("real-sandbox")).unwrap();
 
         let names = manager.all_sandbox_names().unwrap();
         assert!(names.contains(&"real-sandbox".to_string()));
-        assert!(!names.contains(&Godo::META_DIR.to_string()));
+        assert!(!names.contains(&Godo::LEASE_DIR.to_string()));
+        assert!(!names.contains(&Godo::METADATA_DIR.to_string()));
+    }
+
+    #[test]
+    fn resolve_base_commit_requires_metadata() {
+        let tmp = tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_repo(&repo_dir);
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+
+        let sandbox_path = manager.sandbox_path("box").unwrap();
+        git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
+
+        let result = manager.resolve_base_commit("box", None);
+        assert!(matches!(result, Err(GodoError::BaseError { .. })));
+    }
+
+    #[test]
+    fn resolve_base_commit_uses_override_without_metadata() {
+        let tmp = tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_repo(&repo_dir);
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+
+        let sandbox_path = manager.sandbox_path("box").unwrap();
+        git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
+
+        let expected = git::rev_parse(&repo_dir, "HEAD").unwrap();
+        let resolved = manager.resolve_base_commit("box", Some("HEAD")).unwrap();
+        assert_eq!(resolved.commit, expected);
+        assert!(!resolved.used_fallback);
+    }
+
+    #[test]
+    fn resolve_base_commit_falls_back_to_merge_base() {
+        let tmp = tempdir().unwrap();
+        let (repo_dir, _origin_dir) = init_repo_with_origin(&tmp);
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+
+        let sandbox_path = manager.sandbox_path("box").unwrap();
+        git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
+
+        let metadata = SandboxMetadata {
+            base_commit: "deadbeef".to_string(),
+            base_ref: None,
+            created_at: 1_700_000_000,
+        };
+        manager
+            .metadata_store()
+            .unwrap()
+            .write("box", &metadata)
+            .unwrap();
+
+        let resolved = manager.resolve_base_commit("box", None).unwrap();
+        let expected =
+            git::merge_base(&repo_dir, &branch_name("box"), DIFF_MERGE_BASE_TARGET).unwrap();
+        assert_eq!(resolved.commit, expected);
+        assert!(resolved.used_fallback);
+        assert_eq!(
+            resolved.fallback_target.as_deref(),
+            Some(DIFF_MERGE_BASE_TARGET)
+        );
+    }
+
+    #[test]
+    fn resolve_base_commit_prefers_recorded_base_ref() {
+        let tmp = tempdir().unwrap();
+        let (repo_dir, _origin_dir) = init_repo_with_origin(&tmp);
+
+        let initial_commit = git::rev_parse(&repo_dir, "HEAD").unwrap();
+        run_git(&repo_dir, &["checkout", "-b", "dev"]);
+        run_git(&repo_dir, &["push", "-u", "origin", "dev"]);
+
+        run_git(&repo_dir, &["checkout", "main"]);
+        fs::write(repo_dir.join("main.txt"), "main update").unwrap();
+        run_git(&repo_dir, &["add", "main.txt"]);
+        run_git(&repo_dir, &["commit", "-m", "Update main"]);
+        run_git(&repo_dir, &["push", "origin", "main"]);
+
+        let godo_dir = tmp.path().join("godo");
+        let output: Arc<dyn Output> = Arc::new(Quiet);
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+
+        let sandbox_path = manager.sandbox_path("box").unwrap();
+        git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
+
+        let metadata = SandboxMetadata {
+            base_commit: "deadbeef".to_string(),
+            base_ref: Some("origin/dev".to_string()),
+            created_at: 1_700_000_000,
+        };
+        manager
+            .metadata_store()
+            .unwrap()
+            .write("box", &metadata)
+            .unwrap();
+
+        let resolved = manager.resolve_base_commit("box", None).unwrap();
+        assert_eq!(resolved.commit, initial_commit);
+        assert!(resolved.used_fallback);
+        assert_eq!(resolved.fallback_target.as_deref(), Some("origin/dev"));
     }
 
     #[test]

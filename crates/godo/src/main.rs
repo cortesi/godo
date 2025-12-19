@@ -86,6 +86,24 @@ enum Commands {
     #[command(alias = "ls")]
     List,
 
+    /// Diff a sandbox against its recorded base commit
+    Diff {
+        /// Name of the sandbox to diff
+        name: String,
+
+        /// Override the base commit used for diffing
+        #[arg(long, value_name = "COMMIT")]
+        base: Option<String>,
+
+        /// Override the pager command for diff output
+        #[arg(long, value_name = "CMD", conflicts_with = "no_pager")]
+        pager: Option<String>,
+
+        /// Disable paging for diff output
+        #[arg(long = "no-pager", conflicts_with = "pager")]
+        no_pager: bool,
+    },
+
     /// Delete a named sandbox
     #[command(alias = "rm")]
     Remove {
@@ -160,14 +178,24 @@ fn main() -> Result<()> {
         }
 
         let exit_code = match e.downcast_ref::<GodoError>() {
-            Some(GodoError::CommandExit { code }) => *code,
-            Some(GodoError::UserAborted) => {
+            Some(err @ GodoError::CommandExit { .. }) => err.exit_code(),
+            Some(err @ GodoError::UserAborted) => {
                 if let Err(finish_err) = output.finish() {
                     eprintln!("Failed to flush output handler: {finish_err:#}");
                 }
-                130
+                err.exit_code()
             }
-            _ => {
+            Some(err) => {
+                // Use the output handler to display the error
+                if let Err(display_err) = output.fail(&format!("{e:#}")) {
+                    eprintln!("Failed to report error via output handler: {display_err:#}");
+                }
+                if let Err(finish_err) = output.finish() {
+                    eprintln!("Failed to flush output handler: {finish_err:#}");
+                }
+                err.exit_code()
+            }
+            None => {
                 // Use the output handler to display the error
                 if let Err(display_err) = output.fail(&format!("{e:#}")) {
                     eprintln!("Failed to report error via output handler: {display_err:#}");
@@ -220,6 +248,14 @@ fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
         }
         Commands::List => {
             godo.list()?;
+        }
+        Commands::Diff {
+            name,
+            base,
+            pager,
+            no_pager,
+        } => {
+            godo.diff(&name, base.as_deref(), pager, no_pager)?;
         }
         Commands::Remove { name, force } => {
             godo.remove(&name, force)?;

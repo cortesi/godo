@@ -67,6 +67,7 @@ Usage: godo [OPTIONS] <COMMAND>
 
 Commands:
   run     Run a command in an isolated workspace
+  diff    Diff a sandbox against its base commit
   list    Show existing sandboxes
   remove  Delete a named sandbox
   clean   Clean up a sandbox; removes unmodified worktree and fully merged branch
@@ -81,6 +82,22 @@ Options:
       --no-prompt       Skip confirmation prompts
   -h, --help            Print help
   -V, --version         Print version
+```
+
+### Diffing a sandbox
+
+Show tracked and untracked changes in a sandbox compared to its recorded base commit:
+
+```bash
+godo diff my-sandbox
+```
+
+Override the base commit or pager configuration:
+
+```bash
+godo diff --base HEAD~1 my-sandbox
+godo diff --pager "delta" my-sandbox
+godo diff --no-pager my-sandbox
 ```
 
 ---

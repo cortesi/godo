@@ -12,6 +12,9 @@ use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 use crate::GodoError;
 
+/// Directory name used to store sandbox lease files.
+pub const LEASE_DIR_NAME: &str = ".godo-leases";
+
 /// Track active sessions per sandbox using lightweight lease files.
 #[derive(Clone)]
 pub struct SessionManager {
@@ -81,7 +84,7 @@ impl SessionManager {
     /// Create a new session manager for the given project directory.
     pub fn new(project_dir: &Path) -> Self {
         Self {
-            base_dir: project_dir.join(".godo-leases"),
+            base_dir: project_dir.join(LEASE_DIR_NAME),
         }
     }
 

@@ -24,6 +24,39 @@ fn run_git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Ok(output)
 }
 
+/// Resolve a rev to its full commit hash, failing if the revision is invalid.
+pub fn rev_parse(repo_path: &Path, rev: &str) -> Result<String> {
+    let commit_ref = format!("{rev}^{{commit}}");
+    let output = run_git(repo_path, &["rev-parse", "--verify", &commit_ref])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Resolve the merge-base between two revisions.
+pub fn merge_base(repo_path: &Path, left: &str, right: &str) -> Result<String> {
+    let output = run_git(repo_path, &["merge-base", left, right])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Return the current branch name, or `None` if HEAD is detached.
+pub fn head_ref(repo_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .with_context(|| "Failed to execute git symbolic-ref")?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if branch.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(branch))
+    }
+}
+
 /// Walk up from `start_dir` to find the nearest repository root containing a `.git` directory.
 pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir;
@@ -42,6 +75,25 @@ pub fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
     let output = run_git(repo_path, &["status", "--porcelain"])?;
     let status_output = String::from_utf8_lossy(&output.stdout);
     Ok(!status_output.trim().is_empty())
+}
+
+/// List untracked files, respecting standard Git ignore rules.
+pub fn untracked_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
+    let output = run_git(
+        repo_path,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    let mut files = Vec::new();
+
+    for entry in output.stdout.split(|byte| *byte == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let path = String::from_utf8_lossy(entry).to_string();
+        files.push(PathBuf::from(path));
+    }
+
+    Ok(files)
 }
 
 /// Statistics about uncommitted changes.

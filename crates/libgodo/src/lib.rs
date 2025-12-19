@@ -10,6 +10,8 @@
 mod git;
 /// High-level orchestration for sandbox lifecycle management.
 mod godo;
+/// Sandbox metadata persistence helpers.
+mod metadata;
 /// Lightweight session tracking for concurrent godo runs.
 mod session;
 
