@@ -20,6 +20,7 @@ path = "src/main.rs"
 libgodo = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+godo-term = { version = "0.0.2", path = "../godo-term" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

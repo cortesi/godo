@@ -152,6 +152,19 @@ godo diff --no-pager my-sandbox
 
 ---
 
+## Library crates
+
+`godo` is built on two internal crates so other frontends can reuse the core:
+
+- **libgodo**: the sandbox engine (worktrees, status, cleanup). It is UI-agnostic and performs no
+  user I/O.
+- **godo-term**: terminal rendering, prompts, and spinners used by the CLI.
+
+If you are integrating godo into a GUI or other tool, depend on `libgodo` directly and supply
+your own UI layer.
+
+---
+
 ## Filesystem support
 
 `godo` uses [clonetree](https://github.com/cortesi/clonetree) for efficient

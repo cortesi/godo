@@ -23,6 +23,7 @@ pub struct SessionManager {
 }
 
 /// RAII lease for a sandbox session.
+#[derive(Debug)]
 pub struct SessionLease {
     /// Path to the lease file.
     lease_path: PathBuf,

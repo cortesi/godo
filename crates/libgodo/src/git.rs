@@ -1,7 +1,7 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
 };
 
 use anyhow::{Context, Result};
@@ -231,24 +231,6 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result
 /// Stage all tracked and untracked changes in the repository.
 pub fn add_all(repo_path: &Path) -> Result<()> {
     run_git(repo_path, &["add", "."])?;
-    Ok(())
-}
-
-/// Launch an interactive `git commit --verbose` session for the repository.
-pub fn commit_interactive(repo_path: &Path) -> Result<()> {
-    let status = Command::new("git")
-        .current_dir(repo_path)
-        .args(["commit", "--verbose"])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| "Failed to execute git commit --verbose")?;
-
-    if !status.success() {
-        anyhow::bail!("Git commit failed");
-    }
-
     Ok(())
 }
 

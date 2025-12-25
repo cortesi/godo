@@ -1,0 +1,24 @@
+[package]
+name = "godo-term"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+indicatif.workspace = true
+inquire = "0.9.1"
+termcolor.workspace = true
+textwrap.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+clap.workspace = true

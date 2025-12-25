@@ -20,12 +20,6 @@ fs4 = { workspace = true }
 sysinfo = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.9.10"
-crossterm.workspace = true
-indicatif.workspace = true
-termcolor.workspace = true
-textwrap.workspace = true
-inquire = "0.9.1"
 
 [dev-dependencies]
-clap.workspace = true
 tempfile = { workspace = true }

@@ -1,3 +1,7 @@
+// Integration tests are compiled as a separate crate, so these lints don't apply
+#![allow(clippy::tests_outside_test_module)]
+#![allow(missing_docs)]
+
 mod common;
 
 use std::{fs, process::Command};
@@ -125,9 +129,9 @@ fn test_clean_command_section_output() -> Result<()> {
         stdout
     );
 
-    // Clean up remaining sandboxes
+    // Clean up remaining sandboxes (ignore errors during cleanup)
     for sandbox in ["clean-sandbox", "dirty-sandbox", "another-clean"] {
-        let _ = run_godo(&repo_path, godo_dir.path(), &["remove", "--force", sandbox]);
+        run_godo(&repo_path, godo_dir.path(), &["remove", "--force", sandbox]).ok();
     }
 
     Ok(())

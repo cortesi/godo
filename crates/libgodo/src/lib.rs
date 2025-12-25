@@ -3,9 +3,9 @@
 #![deny(rustdoc::missing_crate_level_docs)]
 //! Core library for managing ephemeral Git worktrees ("sandboxes") used by godo.
 //!
-//! This crate exposes a small API surface that lets callers create and
-//! manage sandboxes, and control how messages are emitted during operations.
-//! The CLI binary in `crates/godo` builds on top of this library.
+//! This crate exposes a small API surface that lets callers create and manage
+//! sandboxes, query their status, and execute cleanup operations. User-facing
+//! I/O is handled by frontends such as the `godo` CLI.
 
 /// Helper routines for interacting with Git repositories.
 mod git;
@@ -13,12 +13,13 @@ mod git;
 mod godo;
 /// Sandbox metadata persistence helpers.
 mod metadata;
-/// Terminal output abstractions and implementations.
-mod output;
 /// Lightweight session tracking for concurrent godo runs.
 mod session;
 
-/// Re-export of the main manager type and its error.
-pub use godo::{Godo, GodoError};
-/// Re-exports for output abstraction and concrete implementations.
-pub use output::{Output, OutputError, Quiet, Spinner, Terminal};
+pub use git::{CommitInfo, DiffStats, MergeStatus};
+pub use godo::{
+    CleanupBatch, CleanupFailure, CleanupReport, DiffPlan, Godo, GodoError, PrepareSandboxOptions,
+    PrepareSandboxPlan, RemovalBlocker, RemovalOptions, RemovalOutcome, RemovalPlan,
+    SandboxListEntry, SandboxSession, SandboxStatus, UncommittedPolicy,
+};
+pub use session::{CleanupGuard, ReleaseOutcome};

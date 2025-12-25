@@ -1,11 +1,12 @@
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::{symlink_dir, symlink_file};
 use std::{
     collections::HashSet,
     env, fs, io,
-    os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
     result::Result as StdResult,
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -13,10 +14,9 @@ use clonetree::{Options, clone_tree};
 use thiserror::Error;
 
 use crate::{
-    git::{self, MergeStatus},
+    git::{self, CommitInfo, DiffStats, MergeStatus},
     metadata::{SandboxMetadata, SandboxMetadataStore},
-    output::{Output, OutputError as OutputErr},
-    session::{LEASE_DIR_NAME, ReleaseOutcome, SessionManager},
+    session::{LEASE_DIR_NAME, ReleaseOutcome, SessionLease, SessionManager},
 };
 
 /// Custom Result type for Godo operations.
@@ -65,10 +65,12 @@ pub enum GodoError {
         /// Human-readable error description.
         message: String,
     },
-
-    /// The selected output backend reported an error.
-    #[error("Output operation failed: {0}")]
-    OutputError(#[from] OutputErr),
+    /// The repository has uncommitted changes and the selected policy forbids proceeding.
+    #[error("Uncommitted changes present in repository: {repo_dir}")]
+    UncommittedChanges {
+        /// Root of the repository with uncommitted changes.
+        repo_dir: PathBuf,
+    },
 
     /// An underlying I/O operation failed.
     #[error("IO error: {0}")]
@@ -82,6 +84,7 @@ impl GodoError {
             Self::CommandExit { code } => *code,
             Self::UserAborted => 130,
             Self::SandboxError { .. } => 2,
+            Self::UncommittedChanges { .. } => 2,
             Self::BaseError { .. } => 3,
             Self::GitError(_) => 4,
             _ => 1,
@@ -89,52 +92,87 @@ impl GodoError {
     }
 }
 
-/// Follow-up action to take after executing a sandboxed command.
-#[derive(Clone)]
-enum PostRunAction {
-    /// Commit all tracked changes within the sandbox.
-    Commit,
-    /// Re-open an interactive shell in the sandbox.
-    Shell,
-    /// Leave the sandbox intact without committing.
-    Keep,
-    /// Discard the sandbox entirely.
-    Discard,
-    /// Create a branch from the sandbox contents.
-    Branch,
+/// Policy for handling uncommitted repository changes when creating a sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncommittedPolicy {
+    /// Abort sandbox creation if the repository is dirty.
+    Abort,
+    /// Include uncommitted changes when creating the sandbox.
+    Include,
+    /// Reset the sandbox to a clean state after creation.
+    Clean,
 }
 
-/// Status information for a sandbox
-struct Sandbox {
-    /// The name of the sandbox
-    name: String,
-    /// Whether the branch exists
-    has_branch: bool,
-    /// Whether the worktree exists
-    has_worktree: bool,
-    /// Whether the worktree directory path exists
-    has_worktree_dir: bool,
+/// Options for preparing a sandbox.
+#[derive(Debug, Clone)]
+pub struct PrepareSandboxOptions {
+    /// Policy for handling uncommitted changes in the source repository.
+    pub uncommitted_policy: UncommittedPolicy,
+    /// Directory names to exclude when cloning into the sandbox.
+    pub excludes: Vec<String>,
+}
+
+/// Result of preparing a sandbox for use.
+#[derive(Debug)]
+pub struct PrepareSandboxPlan {
+    /// Active sandbox session lease.
+    pub session: SandboxSession,
+    /// Whether the sandbox was created during this call.
+    pub created: bool,
+    /// Whether the sandbox was reset to a clean state after creation.
+    pub cleaned: bool,
+}
+
+/// Active session lease for a sandbox.
+#[derive(Debug)]
+pub struct SandboxSession {
+    /// Name of the sandbox.
+    pub name: String,
+    /// Filesystem path of the sandbox worktree.
+    pub path: PathBuf,
+    /// Lease used to track active connections.
+    lease: SessionLease,
+}
+
+impl SandboxSession {
+    /// Release the session lease and report whether cleanup is permitted.
+    pub fn release(self) -> Result<ReleaseOutcome> {
+        self.lease.release()
+    }
+}
+
+/// Status information for a sandbox.
+#[derive(Debug, Clone)]
+pub struct SandboxStatus {
+    /// The name of the sandbox.
+    pub name: String,
+    /// Whether the branch exists.
+    pub has_branch: bool,
+    /// Whether the worktree exists.
+    pub has_worktree: bool,
+    /// Whether the worktree directory path exists.
+    pub has_worktree_dir: bool,
     /// Branch currently checked out in the worktree, sans refs prefix, when known.
-    worktree_branch: Option<String>,
+    pub worktree_branch: Option<String>,
     /// Whether the worktree is in detached HEAD state.
-    worktree_detached: bool,
+    pub worktree_detached: bool,
     /// Whether the worktree is checking out the expected sandbox branch when attached.
-    worktree_branch_matches: bool,
-    /// Whether there are any staged or unstaged uncommitted changes in the worktree
-    has_uncommitted_changes: bool,
-    /// Diff statistics for uncommitted changes (lines added/removed)
-    diff_stats: Option<git::DiffStats>,
-    /// Merge relationship between the sandbox branch and its integration target
-    merge_status: MergeStatus,
-    /// Commits not yet merged into the integration target
-    unmerged_commits: Vec<git::CommitInfo>,
-    /// Whether the worktree is dangling (no backing directory)
-    is_dangling: bool,
+    pub worktree_branch_matches: bool,
+    /// Whether there are any staged or unstaged uncommitted changes in the worktree.
+    pub has_uncommitted_changes: bool,
+    /// Diff statistics for uncommitted changes (lines added/removed).
+    pub diff_stats: Option<DiffStats>,
+    /// Merge relationship between the sandbox branch and its integration target.
+    pub merge_status: MergeStatus,
+    /// Commits not yet merged into the integration target.
+    pub unmerged_commits: Vec<CommitInfo>,
+    /// Whether the worktree is dangling (no backing directory).
+    pub is_dangling: bool,
 }
 
-impl Sandbox {
-    /// Returns true if the sandbox has both a worktree and a branch
-    fn is_live(&self) -> bool {
+impl SandboxStatus {
+    /// Returns true if the sandbox has both a worktree and a branch.
+    pub fn is_live(&self) -> bool {
         self.has_branch
             && self.has_worktree
             && self.has_worktree_dir
@@ -142,7 +180,7 @@ impl Sandbox {
     }
 
     /// Summarize which sandbox components are currently present.
-    fn component_status(&self) -> String {
+    pub fn component_status(&self) -> String {
         let branch = if self.has_branch {
             "present"
         } else {
@@ -181,57 +219,114 @@ impl Sandbox {
 
         parts.join(", ")
     }
+}
 
-    /// Display the sandbox status using the provided output.
-    /// Only shows information that requires user attention.
-    fn show(&self, output: &dyn Output, connections: usize) -> Result<()> {
-        // Check if there are any issues to report
-        let has_unmerged = self.has_branch && matches!(self.merge_status, MergeStatus::Diverged);
-        let has_uncommitted = self.has_worktree && self.has_uncommitted_changes;
+/// List entry combining sandbox status with active connection count.
+#[derive(Debug, Clone)]
+pub struct SandboxListEntry {
+    /// Status information for the sandbox.
+    pub status: SandboxStatus,
+    /// Number of active godo sessions in the sandbox.
+    pub active_connections: usize,
+}
 
-        // Always use section for consistent visual hierarchy (bold name)
-        let section = output.section(&self.name);
+/// Plan describing how to show a diff for a sandbox.
+#[derive(Debug, Clone)]
+pub struct DiffPlan {
+    /// Name of the sandbox being diffed.
+    pub sandbox_name: String,
+    /// Filesystem path to the sandbox worktree.
+    pub sandbox_path: PathBuf,
+    /// Base commit to diff against.
+    pub base_commit: String,
+    /// Whether a merge-base fallback was used to resolve the base.
+    pub used_fallback: bool,
+    /// Target ref used to compute the fallback base, when applicable.
+    pub fallback_target: Option<String>,
+    /// Untracked files to diff with `git diff --no-index`.
+    pub untracked_files: Vec<PathBuf>,
+}
 
-        // Show the branch name
-        if let Some(branch) = &self.worktree_branch {
-            section.item("branch", branch)?;
-        } else if self.worktree_detached {
-            section.item("branch", "(detached HEAD)")?;
-        } else if self.has_branch {
-            section.item("branch", &format!("godo/{}", self.name))?;
-        }
+/// Reasons that block a sandbox removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalBlocker {
+    /// The sandbox has uncommitted changes.
+    UncommittedChanges,
+    /// The sandbox branch has unmerged commits.
+    UnmergedCommits,
+    /// The merge status of the sandbox branch is unknown.
+    MergeStatusUnknown,
+}
 
-        if connections > 0 {
-            let label = if connections == 1 {
-                "1 active connection".to_string()
-            } else {
-                format!("{connections} active connections")
-            };
-            section.message(&label)?;
-        }
-        if has_unmerged {
-            for commit in &self.unmerged_commits {
-                section.commit(
-                    &commit.short_hash,
-                    &commit.subject,
-                    commit.insertions,
-                    commit.deletions,
-                )?;
-            }
-        }
-        if has_uncommitted {
-            if let Some(stats) = &self.diff_stats {
-                section.diff_stat("uncommitted changes", stats.insertions, stats.deletions)?;
-            } else {
-                section.warn("uncommitted changes")?;
-            }
-        }
-        if self.is_dangling {
-            section.fail("dangling worktree")?;
-        }
+/// Removal plan describing the sandbox state and blockers.
+#[derive(Debug, Clone)]
+pub struct RemovalPlan {
+    /// Status information for the sandbox.
+    pub status: SandboxStatus,
+    /// Reasons removal is blocked without confirmation.
+    pub blockers: Vec<RemovalBlocker>,
+}
 
-        Ok(())
+/// Options for removing a sandbox in the presence of blockers.
+#[derive(Debug, Clone, Copy)]
+pub struct RemovalOptions {
+    /// Allow removal when uncommitted changes exist.
+    pub allow_uncommitted_changes: bool,
+    /// Allow removal when unmerged commits exist.
+    pub allow_unmerged_commits: bool,
+    /// Allow removal when merge status is unknown.
+    pub allow_unknown_merge_status: bool,
+}
+
+impl RemovalOptions {
+    /// Allow removal regardless of blockers.
+    pub fn force() -> Self {
+        Self {
+            allow_uncommitted_changes: true,
+            allow_unmerged_commits: true,
+            allow_unknown_merge_status: true,
+        }
     }
+}
+
+/// Outcome of attempting a removal with options applied.
+#[derive(Debug, Clone)]
+pub enum RemovalOutcome {
+    /// The sandbox was removed.
+    Removed,
+    /// Removal was blocked by the listed conditions.
+    Blocked(Vec<RemovalBlocker>),
+}
+
+/// Report describing what happened during a cleanup.
+#[derive(Debug, Clone)]
+pub struct CleanupReport {
+    /// Status information captured before cleanup.
+    pub status: SandboxStatus,
+    /// Whether the worktree was removed.
+    pub worktree_removed: bool,
+    /// Whether the branch was removed.
+    pub branch_removed: bool,
+    /// Whether a dangling directory was removed.
+    pub directory_removed: bool,
+}
+
+/// Collection of cleanup reports and failures for batch operations.
+#[derive(Debug, Default)]
+pub struct CleanupBatch {
+    /// Successful cleanup reports.
+    pub reports: Vec<CleanupReport>,
+    /// Per-sandbox cleanup failures.
+    pub failures: Vec<CleanupFailure>,
+}
+
+/// Error information captured when cleaning a sandbox fails.
+#[derive(Debug)]
+pub struct CleanupFailure {
+    /// Name of the sandbox that failed to clean.
+    pub sandbox_name: String,
+    /// Error encountered while cleaning.
+    pub error: GodoError,
 }
 
 /// Hardcoded fallback targets when dynamic detection fails.
@@ -250,32 +345,6 @@ struct BaseResolution {
     used_fallback: bool,
     /// The target ref used for merge-base fallback, when applicable.
     fallback_target: Option<String>,
-}
-
-/// Pager configuration for diff commands.
-struct DiffPager {
-    /// Pager command override, if any.
-    pager: Option<String>,
-    /// Whether paging is disabled.
-    no_pager: bool,
-}
-
-impl DiffPager {
-    /// Create a new pager configuration.
-    fn new(pager: Option<String>, no_pager: bool) -> Self {
-        Self { pager, no_pager }
-    }
-
-    /// Apply pager arguments to a git command.
-    fn apply(&self, command: &mut Command) {
-        if self.no_pager {
-            command.arg("--no-pager");
-        }
-        if let Some(pager) = &self.pager {
-            command.arg("-c");
-            command.arg(format!("core.pager={pager}"));
-        }
-    }
 }
 
 /// Validates that a sandbox name contains only allowed characters (a-zA-Z0-9-_)
@@ -354,17 +423,13 @@ fn branch_name(sandbox_name: &str) -> String {
 ///
 /// A sandbox is a dedicated worktree rooted under a project-specific
 /// directory inside the "godo directory". `Godo` provides high-level
-/// operations to create a sandbox, run commands inside it, and to list,
-/// remove, or clean existing sandboxes.
+/// operations to create sandboxes, inspect their status, and perform cleanup
+/// and removal operations.
 pub struct Godo {
     /// Base directory where per-project sandbox directories live.
     godo_dir: PathBuf,
     /// Root of the Git repository the sandboxes operate on.
     repo_dir: PathBuf,
-    /// Whether user prompts should be skipped in favor of defaults.
-    no_prompt: bool,
-    /// Output channel used for rendering status and prompts.
-    output: Arc<dyn Output>,
 }
 
 impl Godo {
@@ -377,15 +442,7 @@ impl Godo {
     /// - `godo_dir`: directory where project sandboxes are stored
     /// - `repo_dir`: optional path to the git repository root. If `None`, the
     ///   repository root is discovered by walking up from the current directory.
-    /// - `output`: output implementation used for user-facing messages
-    /// - `no_prompt`: when `true`, avoid interactive prompts and assume
-    ///   conservative defaults
-    pub fn new(
-        godo_dir: PathBuf,
-        repo_dir: Option<PathBuf>,
-        output: Arc<dyn Output>,
-        no_prompt: bool,
-    ) -> anyhow::Result<Self> {
+    pub fn new(godo_dir: PathBuf, repo_dir: Option<PathBuf>) -> Result<Self> {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
 
@@ -409,12 +466,7 @@ impl Godo {
         // Canonicalize the repository root to keep sandbox paths stable.
         let repo_dir = fs::canonicalize(&repo_dir).unwrap_or(repo_dir);
 
-        Ok(Self {
-            godo_dir,
-            repo_dir,
-            no_prompt,
-            output,
-        })
+        Ok(Self { godo_dir, repo_dir })
     }
 
     /// Get the project directory path within the godo directory
@@ -423,8 +475,8 @@ impl Godo {
         Ok(self.godo_dir.join(&project))
     }
 
-    /// Calculate the path for a sandbox given its name
-    fn sandbox_path(&self, sandbox_name: &str) -> Result<PathBuf> {
+    /// Calculate the path for a sandbox given its name.
+    pub fn sandbox_path(&self, sandbox_name: &str) -> Result<PathBuf> {
         Ok(self.project_dir()?.join(sandbox_name))
     }
 
@@ -463,100 +515,40 @@ impl Godo {
         Ok(())
     }
 
-    /// Wrapper around `Output::select` that returns `None` if the user cancels.
-    fn prompt_select_opt(&self, prompt: &str, options: Vec<String>) -> Result<Option<usize>> {
-        match self.output.select(prompt, options) {
-            Ok(selection) => Ok(Some(selection)),
-            Err(OutputErr::Cancelled) => Ok(None),
-            Err(other) => Err(GodoError::OutputError(other)),
+    /// Get the status for a sandbox or return a not-found error.
+    fn require_sandbox_status(&self, name: &str) -> Result<SandboxStatus> {
+        match self.get_sandbox(name)? {
+            Some(status) => Ok(status),
+            None => Err(GodoError::SandboxError {
+                name: name.to_string(),
+                message: "does not exist".to_string(),
+            }),
         }
     }
 
-    /// Wrapper around `Output::select` that maps cancellation to `UserAborted`.
-    fn prompt_select(&self, prompt: &str, options: Vec<String>) -> Result<usize> {
-        self.prompt_select_opt(prompt, options)?
-            .ok_or(GodoError::UserAborted)
+    /// Get the sandbox worktree path when a live worktree exists.
+    fn require_worktree_path(&self, name: &str) -> Result<PathBuf> {
+        let status = self.require_sandbox_status(name)?;
+        if !status.has_worktree || !status.has_worktree_dir {
+            return Err(GodoError::SandboxError {
+                name: name.to_string(),
+                message: "has no worktree to operate on".to_string(),
+            });
+        }
+        self.sandbox_path(name)
     }
 
-    /// Wrapper around `Output::confirm` that maps cancellation to `UserAborted`.
-    fn prompt_confirm(&self, prompt: &str) -> Result<bool> {
-        self.output.confirm(prompt).map_err(|err| match err {
-            OutputErr::Cancelled => GodoError::UserAborted,
-            other => GodoError::OutputError(other),
-        })
+    /// Check whether the source repository has uncommitted changes.
+    pub fn repo_has_uncommitted_changes(&self) -> Result<bool> {
+        git::has_uncommitted_changes(&self.repo_dir).map_err(|e| git_error(&e))
     }
 
-    /// Prompt the user for what to do after command execution
-    fn prompt_for_action(&self, sandbox_path: &Path, sandbox_name: &str) -> Result<PostRunAction> {
-        // Check current state
-        let has_uncommitted =
-            git::has_uncommitted_changes(sandbox_path).map_err(|e| git_error(&e))?;
-
-        let branch = branch_name(sandbox_name);
-        let merge_status =
-            git::branch_merge_status(&self.repo_dir, &branch).unwrap_or(MergeStatus::Unknown);
-        let has_unmerged = matches!(merge_status, MergeStatus::Diverged);
-
-        // Build prompt message
-        let prompt = match (has_uncommitted, has_unmerged) {
-            (true, true) => "Uncommitted changes and unmerged commits. What next?",
-            (true, false) => "Uncommitted changes. What next?",
-            (false, true) => "Unmerged commits. What next?",
-            (false, false) => "What next?",
-        };
-
-        // Build options based on state - only show relevant actions
-        let mut options = Vec::new();
-        let mut actions = Vec::new();
-
-        // Commit only makes sense if there are uncommitted changes
-        if has_uncommitted {
-            options.push("Commit all changes".to_string());
-            actions.push(PostRunAction::Commit);
-        }
-
-        // Shell is always available
-        options.push("Drop to shell".to_string());
-        actions.push(PostRunAction::Shell);
-
-        // Keep is always available
-        options.push("Keep sandbox".to_string());
-        actions.push(PostRunAction::Keep);
-
-        // Discard is always available (discards everything)
-        options.push("Discard everything".to_string());
-        actions.push(PostRunAction::Discard);
-
-        // Branch only makes sense if there are unmerged commits worth keeping
-        if has_unmerged {
-            options.push("Keep branch only".to_string());
-            actions.push(PostRunAction::Branch);
-        }
-
-        let selection = self.prompt_select_opt(prompt, options)?;
-        match selection {
-            Some(idx) => Ok(actions[idx].clone()),
-            None => Ok(PostRunAction::Shell),
-        }
-    }
-
-    /// Create or reuse a sandbox and run a command or interactive shell in it.
-    ///
-    /// - `keep`: keep the sandbox after the command completes when `true`
-    /// - `commit`: optional commit message to commit all changes automatically
-    /// - `excludes`: glob patterns to exclude when cloning the tree into the sandbox
-    /// - `sandbox_name`: the logical name of the sandbox (used for branch/worktree)
-    /// - `command`: command to execute; an empty slice starts an interactive shell
-    pub fn run(
+    /// Create or reuse a sandbox and acquire a session lease for it.
+    pub fn prepare_sandbox(
         &self,
-        keep: bool,
-        commit: Option<String>,
-        force_shell: bool,
-        excludes: &[String],
         sandbox_name: &str,
-        command: &[String],
-    ) -> Result<()> {
-        // Validate sandbox name
+        options: PrepareSandboxOptions,
+    ) -> Result<PrepareSandboxPlan> {
         validate_sandbox_name(sandbox_name)?;
 
         let sandbox_path = self.sandbox_path(sandbox_name)?;
@@ -567,16 +559,11 @@ impl Godo {
         let locked_session = session_manager.lock(sandbox_name)?;
 
         let existing_sandbox = self.get_sandbox(sandbox_name)?;
-
-        let mut use_clean_branch = false;
+        let mut created = false;
+        let mut cleaned = false;
 
         if let Some(sandbox) = existing_sandbox {
-            // Sandbox exists, check if it's live
-            if sandbox.is_live() {
-                self.output.message(&format!(
-                    "Using existing sandbox {sandbox_name} at {sandbox_path:?}"
-                ))?;
-            } else {
+            if !sandbox.is_live() {
                 let status = sandbox.component_status();
                 return Err(GodoError::SandboxError {
                     name: sandbox_name.to_string(),
@@ -584,306 +571,116 @@ impl Godo {
                 });
             }
         } else {
-            // Sandbox doesn't exist, create it
-            // Check for uncommitted changes
-            if git::has_uncommitted_changes(&self.repo_dir).map_err(|e| git_error(&e))? {
-                self.output.warn("You have uncommitted changes.")?;
+            let PrepareSandboxOptions {
+                uncommitted_policy,
+                excludes,
+            } = options;
+            let has_uncommitted = self.repo_has_uncommitted_changes()?;
+            let use_clean_branch = matches!(uncommitted_policy, UncommittedPolicy::Clean);
 
-                if !self.no_prompt {
-                    let options = vec![
-                        "Abort".to_string(),
-                        "Include uncommitted changes".to_string(),
-                        "Start clean (HEAD only)".to_string(),
-                    ];
-
-                    match self.prompt_select("Uncommitted changes in working tree", options)? {
-                        0 => return Err(GodoError::UserAborted), // Abort
-                        1 => {} // Continue - do nothing, proceed with normal flow
-                        2 => {
-                            // Use clean branch - we'll reset after creating the worktree
-                            use_clean_branch = true;
-                        }
-                        _ => unreachable!("Invalid selection"),
-                    }
-                }
+            if has_uncommitted && matches!(uncommitted_policy, UncommittedPolicy::Abort) {
+                return Err(GodoError::UncommittedChanges {
+                    repo_dir: self.repo_dir.clone(),
+                });
             }
 
             // Ensure project directory exists
-            let project_dir = self.project_dir()?;
             fs::create_dir_all(&project_dir)?;
 
             let base_commit = git::rev_parse(&self.repo_dir, "HEAD").map_err(|e| git_error(&e))?;
             let base_ref = git::head_ref(&self.repo_dir).map_err(|e| git_error(&e))?;
 
             let branch = branch_name(sandbox_name);
-            self.output.message(&format!(
-                "Creating sandbox {sandbox_name} with branch {branch} at {sandbox_path:?}"
-            ))?;
             git::create_worktree(&self.repo_dir, &sandbox_path, &branch)
                 .map_err(|e| git_error(&e))?;
-
-            let spinner = self.output.spinner("Cloning tree to sandbox...");
 
             // Clone each top-level entry from repo to sandbox, skipping .git.
             // We do this entry-by-entry because clone_tree requires the destination
             // not to exist, but the worktree already created the sandbox with .git.
-            let clone_result: Result<()> = (|| {
-                for entry in fs::read_dir(&self.repo_dir)? {
-                    let entry = entry?;
-                    let name = entry.file_name();
-                    if name == ".git" {
-                        continue;
-                    }
+            for entry in fs::read_dir(&self.repo_dir)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name == ".git" {
+                    continue;
+                }
 
-                    // Check user excludes
-                    let name_str = name.to_string_lossy();
-                    if excludes.iter().any(|ex| name_str == *ex) {
-                        continue;
-                    }
+                // Check user excludes
+                let name_str = name.to_string_lossy();
+                if excludes.iter().any(|ex| name_str == *ex) {
+                    continue;
+                }
 
-                    let src = entry.path();
-                    let dest = sandbox_path.join(&name);
+                let src = entry.path();
+                let dest = sandbox_path.join(&name);
 
-                    // Remove existing entry in sandbox (from worktree checkout)
-                    if dest.exists() || dest.is_symlink() {
-                        if dest.is_dir() && !dest.is_symlink() {
-                            fs::remove_dir_all(&dest)?;
-                        } else {
-                            fs::remove_file(&dest)?;
-                        }
-                    }
-
-                    if src.is_dir() && !src.is_symlink() {
-                        clone_tree(&src, &dest, &Options::new()).map_err(|e| {
-                            GodoError::OperationError(format!(
-                                "Failed to clone {:?} to sandbox: {e}",
-                                name
-                            ))
-                        })?;
-                    } else if src.is_symlink() {
-                        let target = fs::read_link(&src)?;
-                        #[cfg(unix)]
-                        symlink(&target, &dest)?;
-                        #[cfg(windows)]
-                        {
-                            if target.is_dir() {
-                                std::os::windows::fs::symlink_dir(&target, &dest)?;
-                            } else {
-                                std::os::windows::fs::symlink_file(&target, &dest)?;
-                            }
-                        }
+                // Remove existing entry in sandbox (from worktree checkout)
+                if dest.exists() || dest.is_symlink() {
+                    if dest.is_dir() && !dest.is_symlink() {
+                        fs::remove_dir_all(&dest)?;
                     } else {
-                        reflink_copy::reflink_or_copy(&src, &dest).map_err(|e| {
-                            GodoError::OperationError(format!(
-                                "Failed to copy {:?} to sandbox: {e}",
-                                name
-                            ))
-                        })?;
+                        fs::remove_file(&dest)?;
                     }
                 }
-                Ok(())
-            })();
 
-            match clone_result {
-                Ok(()) => spinner.finish_success("Sandbox ready"),
-                Err(e) => {
-                    spinner.finish_fail("Clone failed");
-                    return Err(e);
+                if src.is_dir() && !src.is_symlink() {
+                    clone_tree(&src, &dest, &Options::new()).map_err(|e| {
+                        GodoError::OperationError(format!(
+                            "Failed to clone {:?} to sandbox: {e}",
+                            name
+                        ))
+                    })?;
+                } else if src.is_symlink() {
+                    let target = fs::read_link(&src)?;
+                    #[cfg(unix)]
+                    symlink(&target, &dest)?;
+                    #[cfg(windows)]
+                    {
+                        if target.is_dir() {
+                            symlink_dir(&target, &dest)?;
+                        } else {
+                            symlink_file(&target, &dest)?;
+                        }
+                    }
+                } else {
+                    reflink_copy::reflink_or_copy(&src, &dest).map_err(|e| {
+                        GodoError::OperationError(format!(
+                            "Failed to copy {:?} to sandbox: {e}",
+                            name
+                        ))
+                    })?;
                 }
             }
 
-            // If user chose to use clean branch, reset the sandbox to remove uncommitted changes
-            if use_clean_branch {
-                self.output.message("Resetting sandbox to clean state...")?;
+            if has_uncommitted && use_clean_branch {
                 git::reset_hard(&sandbox_path)
                     .map_err(|e| GodoError::GitError(format!("Failed to reset sandbox: {e}")))?;
                 git::clean(&sandbox_path)
                     .map_err(|e| GodoError::GitError(format!("Failed to clean sandbox: {e}")))?;
-                self.output.success("Sandbox is now in a clean state")?;
+                cleaned = true;
             }
 
             self.record_metadata(sandbox_name, base_commit, base_ref)?;
+            created = true;
         }
-
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
         // Acquire session lease to track concurrent connections.
         let lease = locked_session.acquire_lease()?;
-        let status = if command.is_empty() {
-            // Interactive shell
-            Command::new(&shell)
-                .current_dir(&sandbox_path)
-                .status()
-                .map_err(|e| GodoError::OperationError(format!("Failed to start shell: {e}")))?
-        } else if force_shell {
-            // Force shell evaluation (e.g., pipes, globs). Users should quote the entire command
-            // in their outer shell, e.g.: --sh 'echo "a b" | wc -w'
-            let command_string = command.join(" ");
-            Command::new(&shell)
-                .arg("-c")
-                .arg(&command_string)
-                .current_dir(&sandbox_path)
-                .status()
-                .map_err(|e| GodoError::OperationError(format!("Failed to run command: {e}")))?
-        } else {
-            // Exec program directly to preserve argument boundaries and quoting
-            let program = &command[0];
-            let args = &command[1..];
-            match Command::new(program)
-                .args(args)
-                .current_dir(&sandbox_path)
-                .status()
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    // Map command-not-found to standard 127 like shells do
-                    if e.kind() == io::ErrorKind::NotFound {
-                        return Err(GodoError::CommandExit { code: 127 });
-                    }
-                    return Err(GodoError::OperationError(format!(
-                        "Failed to run command: {e}"
-                    )));
-                }
-            }
+        let session = SandboxSession {
+            name: sandbox_name.to_string(),
+            path: sandbox_path,
+            lease,
         };
 
-        if !status.success() {
-            // Extract the actual exit code
-            let exit_code = status.code().unwrap_or(1);
-            return Err(GodoError::CommandExit { code: exit_code });
-        }
-
-        let _cleanup_guard = match lease.release()? {
-            ReleaseOutcome::NotLast => {
-                self.output
-                    .message("Another godo session is still attached; skipping cleanup.")?;
-                return Ok(());
-            }
-            ReleaseOutcome::Last(guard) => guard,
-        };
-
-        // Check if sandbox is clean (no uncommitted changes, no unmerged commits)
-        // If so, auto-delete without prompting
-        if !keep && commit.is_none() {
-            let has_uncommitted = git::has_uncommitted_changes(&sandbox_path).unwrap_or(false);
-            let merge_status = git::branch_merge_status(&self.repo_dir, &branch_name(sandbox_name))
-                .unwrap_or(MergeStatus::Unknown);
-            let is_clean = !has_uncommitted && matches!(merge_status, MergeStatus::Clean);
-
-            if is_clean {
-                self.remove_sandbox(sandbox_name)?;
-                return Ok(());
-            }
-        }
-
-        // Handle automatic commit if specified
-        if let Some(commit_message) = commit {
-            self.output.message("Staging and committing changes...")?;
-            // Stage all changes
-            git::add_all(&sandbox_path).map_err(|e| git_error(&e))?;
-            // Commit with the provided message
-            git::commit(&sandbox_path, &commit_message).map_err(|e| git_error(&e))?;
-            self.output
-                .success(&format!("Committed with message: {commit_message}"))?;
-            // Clean up after commit
-            self.cleanup_sandbox(sandbox_name)?;
-        } else if !keep {
-            // If --no-prompt, choose a safe default: keep the sandbox.
-            if self.no_prompt {
-                self.output.success(&format!(
-                    "Keeping sandbox. You can return to it at: {}",
-                    sandbox_path.display()
-                ))?;
-            } else {
-                // Prompt user for action if not explicitly keeping or committing
-                loop {
-                    let action = self.prompt_for_action(&sandbox_path, sandbox_name)?;
-                    match action {
-                        PostRunAction::Commit => {
-                            self.output.message("Staging and committing changes...")?;
-                            // Stage all changes
-                            git::add_all(&sandbox_path).map_err(|e| git_error(&e))?;
-                            // Commit with verbose flag
-                            git::commit_interactive(&sandbox_path).map_err(|e| git_error(&e))?;
-                            // Clean up after commit
-                            self.cleanup_sandbox(sandbox_name)?;
-                            break; // Exit the loop after commit
-                        }
-                        PostRunAction::Shell => {
-                            self.output.message("Opening shell in sandbox...")?;
-                            // Run interactive shell
-                            let shell_status = Command::new(&shell)
-                                .current_dir(&sandbox_path)
-                                .status()
-                                .map_err(|e| {
-                                    GodoError::OperationError(format!("Failed to start shell: {e}"))
-                                })?;
-
-                            if !shell_status.success() {
-                                self.output.warn("Shell exited with non-zero status")?;
-                            }
-                            // Continue the loop to show prompt again
-                        }
-                        PostRunAction::Keep => {
-                            self.output.success(&format!(
-                                "Keeping sandbox. You can return to it at: {}",
-                                sandbox_path.display()
-                            ))?;
-                            break; // Exit the loop after keep
-                        }
-                        PostRunAction::Discard => {
-                            // Confirm discard action
-                            if !self.no_prompt
-                                && !self.prompt_confirm("Discard all changes and delete branch?")?
-                            {
-                                // User cancelled, continue the loop to show prompt again
-                                continue;
-                            }
-                            self.remove_sandbox(sandbox_name)?;
-                            break; // Exit the loop after discard
-                        }
-                        PostRunAction::Branch => {
-                            self.output
-                                .message("Keeping branch but removing worktree...")?;
-                            // Remove only the worktree, keeping the branch
-                            git::remove_worktree(&self.repo_dir, &sandbox_path, true)
-                                .map_err(|e| git_error(&e))?;
-                            if sandbox_path.exists() {
-                                fs::remove_dir_all(&sandbox_path).map_err(|e| {
-                                    GodoError::OperationError(format!(
-                                        "Failed to remove sandbox directory: {e}"
-                                    ))
-                                })?;
-                            }
-                            self.remove_metadata(sandbox_name)?;
-                            let branch = branch_name(sandbox_name);
-                            self.output
-                                .success(&format!("Worktree removed, branch {branch} kept"))?;
-                            break; // Exit the loop after branch
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        Ok(PrepareSandboxPlan {
+            session,
+            created,
+            cleaned,
+        })
     }
 
-    /// Diff a sandbox against its recorded base commit.
-    pub fn diff(
-        &self,
-        sandbox_name: &str,
-        base_override: Option<&str>,
-        pager: Option<String>,
-        no_pager: bool,
-    ) -> Result<()> {
+    /// Plan a diff for a sandbox against its recorded base commit.
+    pub fn diff_plan(&self, sandbox_name: &str, base_override: Option<&str>) -> Result<DiffPlan> {
         validate_sandbox_name(sandbox_name)?;
-
-        if no_pager && pager.is_some() {
-            return Err(GodoError::OperationError(
-                "Cannot combine --pager with --no-pager".to_string(),
-            ));
-        }
 
         let sandbox = match self.get_sandbox(sandbox_name)? {
             Some(status) => status,
@@ -905,33 +702,16 @@ impl Godo {
 
         let sandbox_path = self.sandbox_path(sandbox_name)?;
         let base = self.resolve_base_commit(sandbox_name, base_override)?;
+        let untracked_files = git::untracked_files(&sandbox_path).map_err(|e| git_error(&e))?;
 
-        if base.used_fallback
-            && let Some(target) = &base.fallback_target
-        {
-            self.output.warn(&format!(
-                "Recorded base commit missing; using merge-base with {target}"
-            ))?;
-        }
-
-        let pager = DiffPager::new(pager, no_pager);
-
-        let tracked_args = vec!["diff".to_string(), base.commit];
-        self.run_git_diff_command(&sandbox_path, &pager, &tracked_args)?;
-
-        let untracked = git::untracked_files(&sandbox_path).map_err(|e| git_error(&e))?;
-        for path in untracked {
-            let diff_args = vec![
-                "diff".to_string(),
-                "--no-index".to_string(),
-                "--".to_string(),
-                "/dev/null".to_string(),
-                path.to_string_lossy().to_string(),
-            ];
-            self.run_git_diff_command(&sandbox_path, &pager, &diff_args)?;
-        }
-
-        Ok(())
+        Ok(DiffPlan {
+            sandbox_name: sandbox_name.to_string(),
+            sandbox_path,
+            base_commit: base.commit,
+            used_fallback: base.used_fallback,
+            fallback_target: base.fallback_target,
+            untracked_files,
+        })
     }
 
     /// Resolve the base commit for a sandbox diff.
@@ -1024,38 +804,8 @@ impl Godo {
         }
     }
 
-    /// Run a git diff command, treating exit codes 0 and 1 as success.
-    fn run_git_diff_command(
-        &self,
-        sandbox_path: &Path,
-        pager: &DiffPager,
-        args: &[String],
-    ) -> Result<()> {
-        let mut command = Command::new("git");
-        command.current_dir(sandbox_path);
-        pager.apply(&mut command);
-        command.args(args);
-        command.stdin(Stdio::inherit());
-        command.stdout(Stdio::inherit());
-        command.stderr(Stdio::inherit());
-
-        let status = command.status().map_err(|e| {
-            GodoError::GitError(format!("Failed to run git {}: {e}", args.join(" ")))
-        })?;
-
-        match status.code() {
-            Some(0) | Some(1) => Ok(()),
-            Some(code) => Err(GodoError::GitError(format!(
-                "Git diff failed with exit code {code}"
-            ))),
-            None => Err(GodoError::GitError(
-                "Git diff terminated by signal".to_string(),
-            )),
-        }
-    }
-
-    /// Get the status of a sandbox by name
-    fn get_sandbox(&self, name: &str) -> Result<Option<Sandbox>> {
+    /// Get the status of a sandbox by name.
+    fn get_sandbox(&self, name: &str) -> Result<Option<SandboxStatus>> {
         let sandbox_path = self.sandbox_path(name)?;
         let branch_name = branch_name(name);
 
@@ -1127,7 +877,7 @@ impl Godo {
             (false, None)
         };
 
-        Ok(Some(Sandbox {
+        Ok(Some(SandboxStatus {
             name: name.to_string(),
             has_branch,
             has_worktree,
@@ -1186,151 +936,130 @@ impl Godo {
     }
 
     /// List all known sandboxes for the current project with their status.
-    pub fn list(&self) -> Result<()> {
+    pub fn list(&self) -> Result<Vec<SandboxListEntry>> {
         let sorted_names = self.all_sandbox_names()?;
         let project_dir = self.project_dir()?;
         let session_manager = SessionManager::new(&project_dir);
 
-        if sorted_names.is_empty() {
-            self.output.message("No sandboxes found.")?;
-            return Ok(());
-        }
-
-        // Display each sandbox with its attributes
+        let mut entries = Vec::new();
         for name in &sorted_names {
-            match self.get_sandbox(name)? {
-                Some(status) => {
-                    let connections = session_manager.active_connections(name)?;
-                    status.show(&*self.output, connections)?;
-                }
-                None => {
-                    // Skip sandboxes that don't exist
-                    continue;
-                }
+            if let Some(status) = self.get_sandbox(name)? {
+                let connections = session_manager.active_connections(name)?;
+                entries.push(SandboxListEntry {
+                    status,
+                    active_connections: connections,
+                });
             }
         }
 
+        Ok(entries)
+    }
+
+    /// Get the status of a sandbox by name.
+    pub fn sandbox_status(&self, name: &str) -> Result<Option<SandboxStatus>> {
+        self.get_sandbox(name)
+    }
+
+    /// Build a removal plan for a sandbox.
+    pub fn removal_plan(&self, name: &str) -> Result<RemovalPlan> {
+        let status = self.require_sandbox_status(name)?;
+
+        let mut blockers = Vec::new();
+        if status.has_uncommitted_changes {
+            blockers.push(RemovalBlocker::UncommittedChanges);
+        }
+        match status.merge_status {
+            MergeStatus::Diverged => blockers.push(RemovalBlocker::UnmergedCommits),
+            MergeStatus::Unknown => blockers.push(RemovalBlocker::MergeStatusUnknown),
+            MergeStatus::Clean => {}
+        }
+
+        Ok(RemovalPlan { status, blockers })
+    }
+
+    /// Remove a sandbox based on a plan and options.
+    pub fn remove(&self, plan: &RemovalPlan, options: &RemovalOptions) -> Result<RemovalOutcome> {
+        let mut blocked = Vec::new();
+        for blocker in &plan.blockers {
+            let allowed = match blocker {
+                RemovalBlocker::UncommittedChanges => options.allow_uncommitted_changes,
+                RemovalBlocker::UnmergedCommits => options.allow_unmerged_commits,
+                RemovalBlocker::MergeStatusUnknown => options.allow_unknown_merge_status,
+            };
+            if !allowed {
+                blocked.push(*blocker);
+            }
+        }
+
+        if !blocked.is_empty() {
+            return Ok(RemovalOutcome::Blocked(blocked));
+        }
+
+        self.remove_sandbox_force(&plan.status.name)?;
+        Ok(RemovalOutcome::Removed)
+    }
+
+    /// Remove the sandbox worktree while keeping its branch.
+    pub fn remove_worktree_keep_branch(&self, name: &str) -> Result<()> {
+        let status = self.require_sandbox_status(name)?;
+
+        let sandbox_path = self.sandbox_path(name)?;
+
+        if status.has_worktree {
+            git::remove_worktree(&self.repo_dir, &sandbox_path, true).map_err(|e| git_error(&e))?;
+        }
+        if sandbox_path.exists() {
+            fs::remove_dir_all(&sandbox_path).map_err(|e| {
+                GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
+            })?;
+        }
+
+        self.remove_metadata(name)?;
         Ok(())
     }
 
-    /// Remove a sandbox's worktree and branch.
-    ///
-    /// If `force` is `false`, the user is prompted when uncommitted changes or
-    /// unmerged commits are detected.
-    pub fn remove(&self, name: &str, force: bool) -> Result<()> {
-        let status = match self.get_sandbox(name)? {
-            Some(s) => s,
-            None => {
-                return Err(GodoError::SandboxError {
-                    name: name.to_string(),
-                    message: "does not exist".to_string(),
-                });
-            }
-        };
-
-        if !force {
-            if status.has_uncommitted_changes {
-                if self.no_prompt {
-                    return Err(GodoError::SandboxError {
-                        name: name.to_string(),
-                        message: "has uncommitted changes (use --force to remove)".to_string(),
-                    });
-                }
-                if !self.prompt_confirm("Uncommitted changes will be lost. Continue?")? {
-                    return Err(GodoError::UserAborted);
-                }
-            }
-            if matches!(
-                status.merge_status,
-                MergeStatus::Diverged | MergeStatus::Unknown
-            ) {
-                let warning = if matches!(status.merge_status, MergeStatus::Unknown) {
-                    "branch merge status is unknown (use --force to remove)"
-                } else {
-                    "branch has unmerged commits (use --force to remove)"
-                };
-                if self.no_prompt {
-                    return Err(GodoError::SandboxError {
-                        name: name.to_string(),
-                        message: warning.to_string(),
-                    });
-                }
-                let prompt = if matches!(status.merge_status, MergeStatus::Unknown) {
-                    "Merge status unknown (commits may be lost). Continue?"
-                } else {
-                    "Unmerged commits will be lost. Continue?"
-                };
-                if !self.prompt_confirm(prompt)? {
-                    return Err(GodoError::UserAborted);
-                }
-            }
-        }
-
-        self.remove_sandbox(name)
+    /// Stage and commit all changes inside a sandbox.
+    pub fn commit_all(&self, name: &str, message: &str) -> Result<()> {
+        let sandbox_path = self.require_worktree_path(name)?;
+        git::add_all(&sandbox_path).map_err(|e| git_error(&e))?;
+        git::commit(&sandbox_path, message).map_err(|e| git_error(&e))?;
+        Ok(())
     }
 
     /// Clean one sandbox or all sandboxes by removing stale worktrees/branches
     /// when safe to do so.
-    pub fn clean(&self, name: Option<&str>) -> Result<()> {
+    pub fn clean(&self, name: Option<&str>) -> Result<CleanupBatch> {
+        let mut batch = CleanupBatch::default();
+
         match name {
-            Some(name) => {
-                // Clean specific sandbox
-                let status = match self.get_sandbox(name)? {
-                    Some(s) => s,
-                    None => {
-                        return Err(GodoError::SandboxError {
-                            name: name.to_string(),
-                            message: "does not exist".to_string(),
-                        });
-                    }
-                };
-
-                // Warn if there are uncommitted changes (only if worktree exists)
-                if status.has_worktree
-                    && status.has_uncommitted_changes
-                    && !self.no_prompt
-                    && !self.prompt_confirm("Uncommitted changes will be lost. Continue?")?
-                {
-                    return Err(GodoError::UserAborted);
-                }
-
-                self.cleanup_sandbox(name)
-            }
+            Some(name) => match self.cleanup_sandbox(name) {
+                Ok(report) => batch.reports.push(report),
+                Err(error) => batch.failures.push(CleanupFailure {
+                    sandbox_name: name.to_string(),
+                    error,
+                }),
+            },
             None => {
-                // Clean all sandboxes
                 let all_names = self.all_sandbox_names()?;
 
-                if all_names.is_empty() {
-                    self.output.message("No sandboxes to clean")?;
-                    return Ok(());
-                }
-
-                self.output
-                    .message(&format!("Cleaning {} sandboxes...", all_names.len()))?;
-
                 for sandbox_name in all_names {
-                    if let Err(e) = self.cleanup_sandbox(&sandbox_name) {
-                        self.output
-                            .warn(&format!("Failed to clean {sandbox_name}: {e}"))?;
+                    match self.cleanup_sandbox(&sandbox_name) {
+                        Ok(report) => batch.reports.push(report),
+                        Err(error) => batch.failures.push(CleanupFailure {
+                            sandbox_name,
+                            error,
+                        }),
                     }
                 }
-
-                Ok(())
             }
         }
+
+        Ok(batch)
     }
 
-    /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits
-    fn cleanup_sandbox(&self, name: &str) -> Result<()> {
-        let status = match self.get_sandbox(name)? {
-            Some(s) => s,
-            None => {
-                self.output.message(&format!("no such sandbox: {name}"))?;
-                return Ok(());
-            }
-        };
-
-        let section = self.output.section(&format!("cleaning sandbox: {name}"));
+    /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits.
+    fn cleanup_sandbox(&self, name: &str) -> Result<CleanupReport> {
+        let status = self.require_sandbox_status(name)?;
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
@@ -1343,10 +1072,7 @@ impl Godo {
         if status.has_worktree && !status.has_uncommitted_changes {
             git::remove_worktree(&self.repo_dir, &sandbox_path, false)
                 .map_err(|e| git_error(&e))?;
-            section.message("removed unmodified worktree")?;
             worktree_removed = true;
-        } else if status.has_worktree && status.has_uncommitted_changes {
-            section.message("skipping worktree with uncommitted changes")?;
         }
 
         // Clean up the directory if it still exists and worktree was removed
@@ -1373,73 +1099,35 @@ impl Godo {
             self.remove_metadata(name)?;
         }
 
-        // Report what was done
-        if worktree_removed && branch_removed {
-            section.success("unmodified sandbox and branch cleaned up")?;
-        } else if worktree_removed && !branch_removed {
-            section.success(&format!("worktree removed, branch {branch} kept"))?;
-        } else if !status.has_worktree && branch_removed {
-            section.success(&format!("fully merged branch {branch} removed"))?;
-        } else if status.has_worktree && status.has_uncommitted_changes {
-            section.warn("not cleaned: has uncommitted changes")?;
-        } else if status.has_branch && matches!(status.merge_status, MergeStatus::Diverged) {
-            section.warn(&format!("branch {branch} has unmerged commits"))?;
-        } else if status.has_branch && matches!(status.merge_status, MergeStatus::Unknown) {
-            section.warn(&format!(
-                "branch {branch} kept because merge status could not be determined"
-            ))?;
-        } else {
-            section.message("unchanged")?;
-        }
-
-        Ok(())
+        Ok(CleanupReport {
+            status,
+            worktree_removed,
+            branch_removed,
+            directory_removed,
+        })
     }
 
-    /// Remove a sandbox forcefully or fail if it has changes
-    fn remove_sandbox(&self, name: &str) -> Result<()> {
+    /// Remove a sandbox forcefully, ignoring blockers.
+    fn remove_sandbox_force(&self, name: &str) -> Result<()> {
         // Get sandbox status to check current state
-        let status = match self.get_sandbox(name)? {
-            Some(s) => s,
-            None => {
-                return Err(GodoError::SandboxError {
-                    name: name.to_string(),
-                    message: "does not exist".to_string(),
-                });
-            }
-        };
+        let status = self.require_sandbox_status(name)?;
 
         let sandbox_path = self.sandbox_path(name)?;
         let branch = branch_name(name);
 
-        let spinner = self.output.spinner("Removing sandbox...");
-
-        let result: Result<()> = (|| {
-            if status.has_worktree {
-                git::remove_worktree(&self.repo_dir, &sandbox_path, true)
-                    .map_err(|e| git_error(&e))?;
-            }
-            if sandbox_path.exists() {
-                fs::remove_dir_all(&sandbox_path).map_err(|e| {
-                    GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
-                })?;
-            }
-            if status.has_branch {
-                git::delete_branch(&self.repo_dir, &branch, true).map_err(|e| git_error(&e))?;
-            }
-            self.remove_metadata(name)?;
-            Ok(())
-        })();
-
-        match result {
-            Ok(()) => {
-                spinner.finish_success("Sandbox removed");
-                Ok(())
-            }
-            Err(e) => {
-                spinner.finish_fail("Failed to remove sandbox");
-                Err(e)
-            }
+        if status.has_worktree {
+            git::remove_worktree(&self.repo_dir, &sandbox_path, true).map_err(|e| git_error(&e))?;
         }
+        if sandbox_path.exists() {
+            fs::remove_dir_all(&sandbox_path).map_err(|e| {
+                GodoError::OperationError(format!("Failed to remove sandbox directory: {e}"))
+            })?;
+        }
+        if status.has_branch {
+            git::delete_branch(&self.repo_dir, &branch, true).map_err(|e| git_error(&e))?;
+        }
+        self.remove_metadata(name)?;
+        Ok(())
     }
 }
 
@@ -1452,15 +1140,15 @@ fn ensure_godo_directory(godo_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::{
-        output::{Output, OutputError, Quiet, Result as OutputResult, Spinner},
-        session::{ReleaseOutcome, SessionManager},
-    };
+    use crate::session::{ReleaseOutcome, SessionManager};
 
     struct DirGuard {
         original: PathBuf,
@@ -1570,7 +1258,7 @@ mod tests {
 
     #[test]
     fn sandbox_component_status_reports_components() {
-        let sandbox = Sandbox {
+        let sandbox = SandboxStatus {
             name: "example".to_string(),
             has_branch: true,
             has_worktree: true,
@@ -1598,8 +1286,7 @@ mod tests {
         init_repo(&repo_dir);
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir)).unwrap();
 
         // Create project dir and internal dirs inside it
         let project_dir = manager.project_dir().unwrap();
@@ -1620,8 +1307,7 @@ mod tests {
         init_repo(&repo_dir);
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone())).unwrap();
 
         let sandbox_path = manager.sandbox_path("box").unwrap();
         git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
@@ -1637,8 +1323,7 @@ mod tests {
         init_repo(&repo_dir);
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone())).unwrap();
 
         let sandbox_path = manager.sandbox_path("box").unwrap();
         git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
@@ -1655,8 +1340,7 @@ mod tests {
         let (repo_dir, _origin_dir) = init_repo_with_origin(&tmp);
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone())).unwrap();
 
         let sandbox_path = manager.sandbox_path("box").unwrap();
         git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
@@ -1706,8 +1390,7 @@ mod tests {
         run_git(&repo_dir, &["push", "origin", "main"]);
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone())).unwrap();
 
         let sandbox_path = manager.sandbox_path("box").unwrap();
         git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
@@ -1762,8 +1445,7 @@ mod tests {
             .unwrap();
 
         let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, true).unwrap();
+        let manager = Godo::new(godo_dir, Some(repo_dir.clone())).unwrap();
 
         let sandbox_path = manager.sandbox_path("box").unwrap();
         git::create_worktree(&repo_dir, &sandbox_path, &branch_name("box")).unwrap();
@@ -1773,99 +1455,6 @@ mod tests {
         let sandbox = manager.get_sandbox("box").unwrap().unwrap();
         assert!(sandbox.is_dangling);
         assert!(!sandbox.is_live());
-    }
-
-    struct CancelOnSelectOutput;
-
-    impl Output for CancelOnSelectOutput {
-        fn message(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn success(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn warn(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn fail(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn item(&self, _key: &str, _value: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn diff_stat(
-            &self,
-            _label: &str,
-            _insertions: usize,
-            _deletions: usize,
-        ) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn commit(
-            &self,
-            _hash: &str,
-            _subject: &str,
-            _insertions: usize,
-            _deletions: usize,
-        ) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn confirm(&self, _prompt: &str) -> OutputResult<bool> {
-            Ok(false)
-        }
-
-        fn select(&self, _prompt: &str, _options: Vec<String>) -> OutputResult<usize> {
-            Err(OutputError::Cancelled)
-        }
-
-        fn finish(&self) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn section(&self, _header: &str) -> Box<dyn Output> {
-            Box::new(Self)
-        }
-
-        fn spinner(&self, _msg: &str) -> Box<dyn Spinner> {
-            Box::new(QuietSpinner)
-        }
-    }
-
-    struct QuietSpinner;
-
-    impl Spinner for QuietSpinner {
-        fn finish_success(self: Box<Self>, _msg: &str) {}
-
-        fn finish_fail(self: Box<Self>, _msg: &str) {}
-
-        fn finish_clear(self: Box<Self>) {}
-    }
-
-    #[test]
-    fn cancel_in_post_run_action_reopens_shell() {
-        let tmp = tempdir().unwrap();
-        let repo_dir = tmp.path().join("repo");
-        fs::create_dir(&repo_dir).unwrap();
-
-        Command::new("git")
-            .arg("init")
-            .current_dir(&repo_dir)
-            .status()
-            .unwrap();
-
-        let godo_dir = tmp.path().join("godo");
-        let output: Arc<dyn Output> = Arc::new(CancelOnSelectOutput);
-        let manager = Godo::new(godo_dir, Some(repo_dir.clone()), output, false).unwrap();
-
-        let action = manager.prompt_for_action(&repo_dir, "box").unwrap();
-        assert!(matches!(action, PostRunAction::Shell));
     }
 
     #[test]
@@ -1963,8 +1552,7 @@ mod tests {
         let repo_dir = PathBuf::from("/home/user/projects/my-project");
 
         // Create a Godo instance
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir), output, false).unwrap();
+        let godo = Godo::new(godo_dir.clone(), Some(repo_dir)).unwrap();
 
         // Test project_dir method
         let project_dir = godo.project_dir().unwrap();
@@ -1980,7 +1568,7 @@ mod tests {
     }
 
     #[test]
-    fn run_reuses_sandbox_with_relative_godo_dir() {
+    fn prepare_sandbox_reuses_sandbox_with_relative_godo_dir() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -2019,176 +1607,44 @@ mod tests {
 
         // Use a godo dir outside the repo to avoid "destination inside source" errors
         let godo_dir = temp_dir.path().join("godo-outside");
-        let output: Arc<dyn Output> = Arc::new(Quiet);
-        let godo = Godo::new(godo_dir, Some(repo_dir), output, true).unwrap();
+        let godo = Godo::new(godo_dir, Some(repo_dir)).unwrap();
 
-        let command = vec!["echo".to_string(), "hi".to_string()];
-        godo.run(true, None, false, &[], "test-sandbox", &command)
+        let plan = godo
+            .prepare_sandbox(
+                "test-sandbox",
+                PrepareSandboxOptions {
+                    uncommitted_policy: UncommittedPolicy::Include,
+                    excludes: Vec::new(),
+                },
+            )
             .unwrap();
+        assert!(plan.created);
 
-        let sandbox_path = godo.sandbox_path("test-sandbox").unwrap();
+        let sandbox_path = plan.session.path.clone();
         Command::new("git")
             .current_dir(&sandbox_path)
             .args(["checkout", "--detach", "HEAD"])
             .status()
             .unwrap();
 
-        godo.run(true, None, false, &[], "test-sandbox", &command)
+        let _ = plan.session.release().unwrap();
+
+        let plan = godo
+            .prepare_sandbox(
+                "test-sandbox",
+                PrepareSandboxOptions {
+                    uncommitted_policy: UncommittedPolicy::Include,
+                    excludes: Vec::new(),
+                },
+            )
             .unwrap();
+        assert!(!plan.created);
+        let _ = plan.session.release().unwrap();
 
-        godo.remove("test-sandbox", true).unwrap();
-    }
-
-    // Mock spinner for testing
-    struct MockSpinner;
-
-    impl Spinner for MockSpinner {
-        fn finish_success(self: Box<Self>, _msg: &str) {}
-        fn finish_fail(self: Box<Self>, _msg: &str) {}
-        fn finish_clear(self: Box<Self>) {}
-    }
-
-    // Mock output for testing prompt_for_action
-    struct MockOutput {
-        selection: usize,
-    }
-
-    impl Output for MockOutput {
-        fn message(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn success(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn warn(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn fail(&self, _msg: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn item(&self, _key: &str, _value: &str) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn diff_stat(
-            &self,
-            _label: &str,
-            _insertions: usize,
-            _deletions: usize,
-        ) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn commit(
-            &self,
-            _hash: &str,
-            _subject: &str,
-            _insertions: usize,
-            _deletions: usize,
-        ) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn confirm(&self, _prompt: &str) -> OutputResult<bool> {
-            Ok(true)
-        }
-
-        fn select(&self, _prompt: &str, _options: Vec<String>) -> OutputResult<usize> {
-            Ok(self.selection)
-        }
-
-        fn finish(&self) -> OutputResult<()> {
-            Ok(())
-        }
-
-        fn section(&self, _header: &str) -> Box<dyn Output> {
-            Box::new(Self {
-                selection: self.selection,
-            })
-        }
-
-        fn spinner(&self, _msg: &str) -> Box<dyn Spinner> {
-            Box::new(MockSpinner)
-        }
-    }
-
-    #[test]
-    fn test_prompt_for_action() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let godo_dir = temp_dir.path().join(".godo");
-        let repo_dir = temp_dir.path().join("repo");
-
-        // Initialize a git repository with an initial commit
-        fs::create_dir_all(&repo_dir).unwrap();
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["init"])
-            .output()
+        let removal_plan = godo.removal_plan("test-sandbox").unwrap();
+        let outcome = godo
+            .remove(&removal_plan, &RemovalOptions::force())
             .unwrap();
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
-        fs::write(repo_dir.join("README.md"), "test").unwrap();
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["commit", "-m", "init"])
-            .output()
-            .unwrap();
-
-        // For a clean sandbox (no uncommitted, no unmerged), options are:
-        // 0: shell, 1: keep, 2: discard
-        // (no commit option since nothing to commit, no branch option since nothing unmerged)
-
-        // Test selecting "Shell" (index 0 for clean sandbox)
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 0 });
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
-        assert!(matches!(action, PostRunAction::Shell));
-
-        // Test selecting "Keep" (index 1 for clean sandbox)
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
-        assert!(matches!(action, PostRunAction::Keep));
-
-        // Test selecting "Discard" (index 2 for clean sandbox)
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 2 });
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
-        assert!(matches!(action, PostRunAction::Discard));
-
-        // Now test with uncommitted changes - options become:
-        // 0: commit, 1: shell, 2: keep, 3: discard
-        fs::write(repo_dir.join("new_file.txt"), "changes").unwrap();
-
-        // Test selecting "Commit" (index 0 with uncommitted changes)
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 0 });
-        let godo = Godo::new(godo_dir.clone(), Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
-        assert!(matches!(action, PostRunAction::Commit));
-
-        // Test selecting "Shell" (index 1 with uncommitted changes)
-        let output: Arc<dyn Output> = Arc::new(MockOutput { selection: 1 });
-        let godo = Godo::new(godo_dir, Some(repo_dir.clone()), output, false).unwrap();
-        let action = godo.prompt_for_action(&repo_dir, "test").unwrap();
-        assert!(matches!(action, PostRunAction::Shell));
+        assert!(matches!(outcome, RemovalOutcome::Removed));
     }
 }

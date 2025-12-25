@@ -6,7 +6,7 @@
 use std::{thread::sleep, time::Duration};
 
 use clap::{Parser, Subcommand};
-use libgodo::{Output, Terminal};
+use godo_term::{Output, Terminal};
 
 /// Test harness for output presentation
 #[derive(Parser)]

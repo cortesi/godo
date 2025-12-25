@@ -351,8 +351,22 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
+ "godo-term",
  "libgodo",
  "tempfile",
+]
+
+[[package]]
+name = "godo-term"
+version = "0.0.2"
+dependencies = [
+ "clap",
+ "crossterm",
+ "indicatif",
+ "inquire",
+ "termcolor",
+ "textwrap",
+ "thiserror",
 ]
 
 [[package]]
@@ -447,18 +461,12 @@ name = "libgodo"
 version = "0.0.2"
 dependencies = [
  "anyhow",
- "clap",
  "clonetree",
- "crossterm",
  "fs4",
- "indicatif",
- "inquire",
  "reflink-copy",
  "serde",
  "sysinfo",
  "tempfile",
- "termcolor",
- "textwrap",
  "thiserror",
  "toml",
 ]
