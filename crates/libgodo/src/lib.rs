@@ -7,19 +7,25 @@
 //! sandboxes, query their status, and execute cleanup operations. User-facing
 //! I/O is handled by frontends such as the `godo` CLI.
 
+/// Error types for Godo operations.
+mod error;
 /// Helper routines for interacting with Git repositories.
 mod git;
 /// High-level orchestration for sandbox lifecycle management.
 mod godo;
-/// Sandbox metadata persistence helpers.
-mod metadata;
 /// Lightweight session tracking for concurrent godo runs.
 mod session;
+/// Sandbox metadata persistence helpers.
+mod store;
+/// Domain types for Godo operations.
+mod types;
 
+pub use error::GodoError;
 pub use git::{CommitInfo, DiffStats, MergeStatus};
-pub use godo::{
-    CleanupBatch, CleanupFailure, CleanupReport, DiffPlan, Godo, GodoError, PrepareSandboxOptions,
+pub use godo::Godo;
+pub use session::{CleanupGuard, ReleaseOutcome};
+pub use types::{
+    CleanupBatch, CleanupFailure, CleanupReport, DiffPlan, PrepareSandboxOptions,
     PrepareSandboxPlan, RemovalBlocker, RemovalOptions, RemovalOutcome, RemovalPlan,
     SandboxListEntry, SandboxSession, SandboxStatus, UncommittedPolicy,
 };
-pub use session::{CleanupGuard, ReleaseOutcome};

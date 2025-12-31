@@ -4,23 +4,13 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
-/// Metadata persisted for a sandbox in the godo project directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxMetadata {
-    /// Commit hash recorded when the sandbox was created.
-    pub base_commit: String,
-    /// Branch or ref name at sandbox creation, if available.
-    pub base_ref: Option<String>,
-    /// Unix timestamp (seconds) when the sandbox metadata was created.
-    pub created_at: u64,
-}
+use crate::types::SandboxMetadata;
 
 /// Store for reading and writing sandbox metadata files.
 pub struct SandboxMetadataStore {
     /// Directory containing metadata files for sandboxes.
-    base_dir: PathBuf,
+    pub(crate) base_dir: PathBuf,
 }
 
 impl SandboxMetadataStore {
