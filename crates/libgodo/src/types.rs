@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::{GodoError, Result},
     git::{CommitInfo, DiffStats, MergeStatus},
-    session::SessionLease,
+    session::{ReleaseOutcome, SessionLease},
 };
 
 /// Metadata persisted for a sandbox in the godo project directory.
@@ -63,7 +63,7 @@ pub struct SandboxSession {
 
 impl SandboxSession {
     /// Release the session lease and report whether cleanup is permitted.
-    pub fn release(self) -> Result<crate::session::ReleaseOutcome> {
+    pub fn release(self) -> Result<ReleaseOutcome> {
         self.lease.release()
     }
 }

@@ -5,12 +5,7 @@ use libgodo::{Godo, GodoError};
 use crate::ui::{emit, prompt_confirm, render_cleanup_report};
 
 /// Run the `godo clean` command logic.
-pub fn clean(
-    godo: &Godo,
-    output: &dyn Output,
-    name: Option<&str>,
-    no_prompt: bool,
-) -> Result<()> {
+pub fn clean(godo: &Godo, output: &dyn Output, name: Option<&str>, no_prompt: bool) -> Result<()> {
     if let Some(name) = name {
         if let Some(status) = godo.sandbox_status(name)? {
             if status.has_worktree

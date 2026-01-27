@@ -138,6 +138,8 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 [[package]]
 name = "clonetree"
 version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bfe46018b627d1c990f2ac173e876b1d82b18dc3b6b05691dae2fe4a07ba5b5"
 dependencies = [
  "ignore",
  "reflink-copy",

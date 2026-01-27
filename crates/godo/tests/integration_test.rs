@@ -138,7 +138,7 @@ fn test_clean_command_section_output() -> Result<()> {
 }
 
 #[test]
-fn test_sandbox_list_from_within() -> Result<()> {
+fn test_sandbox_list_from_within_blocked() -> Result<()> {
     let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
@@ -154,7 +154,7 @@ fn test_sandbox_list_from_within() -> Result<()> {
     let sandbox_dir = project_dir.join("test-sandbox");
     assert!(sandbox_dir.exists(), "Sandbox directory should exist");
 
-    // Run godo list from within the sandbox - should succeed
+    // Run godo list from within the sandbox - should fail
     let output = Command::new(godo_binary())
         .current_dir(&sandbox_dir)
         .args([
@@ -167,16 +167,26 @@ fn test_sandbox_list_from_within() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "godo list from within sandbox should succeed, stderr: {}",
+        !output.status.success(),
+        "godo list from within sandbox should fail"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
+        combined
     );
 
     Ok(())
 }
 
 #[test]
-fn test_sandbox_diff_from_within() -> Result<()> {
+fn test_sandbox_diff_from_within_blocked() -> Result<()> {
     let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
@@ -191,7 +201,7 @@ fn test_sandbox_diff_from_within() -> Result<()> {
     let project_dir = godo_dir.path().join("test-project");
     let sandbox_dir = project_dir.join("test-sandbox");
 
-    // Run godo diff (no name) from within the sandbox - should auto-detect
+    // Run godo diff from within the sandbox - should fail
     let output = Command::new(godo_binary())
         .current_dir(&sandbox_dir)
         .args([
@@ -205,9 +215,19 @@ fn test_sandbox_diff_from_within() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "godo diff from within sandbox should auto-detect sandbox name, stderr: {}",
+        !output.status.success(),
+        "godo diff from within sandbox should fail"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
+        combined
     );
 
     Ok(())
@@ -255,8 +275,8 @@ fn test_sandbox_run_self_blocked() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("Cannot run sandbox 'test-sandbox' from within itself"),
-        "Should show self-run error, got: {}",
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
         combined
     );
 
@@ -264,7 +284,7 @@ fn test_sandbox_run_self_blocked() -> Result<()> {
 }
 
 #[test]
-fn test_sandbox_run_other_allowed() -> Result<()> {
+fn test_sandbox_run_other_blocked() -> Result<()> {
     let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
@@ -282,7 +302,7 @@ fn test_sandbox_run_other_allowed() -> Result<()> {
     let project_dir = godo_dir.path().join("test-project");
     let sandbox_one_dir = project_dir.join("sandbox-one");
 
-    // Run a different sandbox from within sandbox-one - should succeed
+    // Run a different sandbox from within sandbox-one - should fail
     let output = Command::new(godo_binary())
         .current_dir(&sandbox_one_dir)
         .args([
@@ -299,15 +319,19 @@ fn test_sandbox_run_other_allowed() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "godo run other from within sandbox should succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "godo run other from within sandbox should fail"
     );
 
-    // Verify sandbox-two was created
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
-        project_dir.join("sandbox-two").exists(),
-        "sandbox-two should exist"
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
+        combined
     );
 
     Ok(())
@@ -354,8 +378,8 @@ fn test_sandbox_remove_self_blocked() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("Cannot remove sandbox 'test-sandbox' while inside it"),
-        "Should show self-remove error, got: {}",
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
         combined
     );
 
@@ -363,7 +387,7 @@ fn test_sandbox_remove_self_blocked() -> Result<()> {
 }
 
 #[test]
-fn test_sandbox_remove_other_allowed() -> Result<()> {
+fn test_sandbox_remove_other_blocked() -> Result<()> {
     let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
@@ -385,7 +409,7 @@ fn test_sandbox_remove_other_allowed() -> Result<()> {
     let project_dir = godo_dir.path().join("test-project");
     let sandbox_one_dir = project_dir.join("sandbox-one");
 
-    // Remove sandbox-two from within sandbox-one - should succeed
+    // Remove sandbox-two from within sandbox-one - should fail
     let output = Command::new(godo_binary())
         .current_dir(&sandbox_one_dir)
         .args([
@@ -400,15 +424,19 @@ fn test_sandbox_remove_other_allowed() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "godo remove other from within sandbox should succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "godo remove other from within sandbox should fail"
     );
 
-    // Verify sandbox-two was removed
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
-        !project_dir.join("sandbox-two").exists(),
-        "sandbox-two should be removed"
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
+        combined
     );
 
     Ok(())
@@ -454,8 +482,8 @@ fn test_sandbox_clean_all_blocked() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("Cannot run 'godo clean' (all sandboxes) from within a sandbox"),
-        "Should show clean-all error, got: {}",
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
         combined
     );
 
@@ -503,8 +531,8 @@ fn test_sandbox_clean_self_blocked() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("Cannot clean sandbox 'test-sandbox' while inside it"),
-        "Should show clean-self error, got: {}",
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
         combined
     );
 
@@ -512,7 +540,7 @@ fn test_sandbox_clean_self_blocked() -> Result<()> {
 }
 
 #[test]
-fn test_sandbox_clean_other_allowed() -> Result<()> {
+fn test_sandbox_clean_other_blocked() -> Result<()> {
     let (_temp_dir, repo_path) = create_repo("test-project")?;
     let godo_dir = TempDir::new()?;
 
@@ -534,7 +562,7 @@ fn test_sandbox_clean_other_allowed() -> Result<()> {
     let project_dir = godo_dir.path().join("test-project");
     let sandbox_one_dir = project_dir.join("sandbox-one");
 
-    // Clean sandbox-two from within sandbox-one - should succeed
+    // Clean sandbox-two from within sandbox-one - should fail
     let output = Command::new(godo_binary())
         .current_dir(&sandbox_one_dir)
         .args([
@@ -549,9 +577,19 @@ fn test_sandbox_clean_other_allowed() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "godo clean other from within sandbox should succeed, stderr: {}",
+        !output.status.success(),
+        "godo clean other from within sandbox should fail"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Running godo commands from within a sandbox is not supported"),
+        "Should show sandbox blocked error, got: {}",
+        combined
     );
 
     Ok(())

@@ -2,14 +2,19 @@
 #![deny(rustdoc::missing_crate_level_docs)]
 //! Command-line interface for managing godo sandboxes via the libgodo crate.
 
+/// Argument parsing.
 mod args;
+/// Command implementations.
 mod commands;
+/// UI helpers.
 mod ui;
+/// Utility functions.
 mod utils;
 
 use std::{
     env,
     io::{self, IsTerminal, Write},
+    process,
     sync::Arc,
 };
 
@@ -85,7 +90,7 @@ fn main() -> Result<()> {
             }
         };
 
-        std::process::exit(exit_code);
+        process::exit(exit_code);
     }
     Ok(())
 }
@@ -102,48 +107,12 @@ fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
     };
 
     // Detect if we're running from within a sandbox
-    let current_sandbox = current_sandbox_name(&godo_dir)?;
-
-    // Per-command sandbox context checks
-    match &cli.command {
-        Commands::List => {}
-        Commands::Diff { .. } => {}
-        Commands::Run { name, .. } => {
-            if let Some(ref current) = current_sandbox
-                && current == name
-            {
-                anyhow::bail!(
-                    "Cannot run sandbox '{}' from within itself. Exit the sandbox first.",
-                    name
-                );
-            }
-        }
-        Commands::Remove { name, .. } => {
-            if let Some(ref current) = current_sandbox
-                && current == name
-            {
-                anyhow::bail!(
-                    "Cannot remove sandbox '{}' while inside it. Exit the sandbox first.",
-                    name
-                );
-            }
-        }
-        Commands::Clean { name } => {
-            if let Some(ref current) = current_sandbox {
-                if name.is_none() {
-                    anyhow::bail!(
-                        "Cannot run 'godo clean' (all sandboxes) from within a sandbox. \
-                         Exit the sandbox first, or specify a sandbox name."
-                    );
-                }
-                if name.as_ref() == Some(current) {
-                    anyhow::bail!(
-                        "Cannot clean sandbox '{}' while inside it. Exit the sandbox first.",
-                        current
-                    );
-                }
-            }
-        }
+    if let Some(sandbox) = current_sandbox_name(&godo_dir)? {
+        anyhow::bail!(
+            "Running godo commands from within a sandbox is not supported. \
+             You are currently in sandbox '{}'. Please exit to the project root first.",
+            sandbox
+        );
     }
 
     // Determine repository directory
@@ -191,7 +160,7 @@ fn run(cli: Cli, output: &Arc<dyn Output>) -> Result<()> {
                 base.as_deref(),
                 pager,
                 no_pager,
-                current_sandbox.as_deref(),
+                None,
             )?;
         }
         Commands::Remove { name, force } => {
