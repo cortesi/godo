@@ -1,8 +1,8 @@
 use anyhow::Result;
 use godo_term::Output;
 use libgodo::{DiffPlan, Godo, GodoError};
-use std::process::{Command, Stdio};
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use crate::ui::emit;
 

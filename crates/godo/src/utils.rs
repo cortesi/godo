@@ -1,5 +1,8 @@
 use anyhow::Result;
-use std::{env, path::{Path, PathBuf}};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 /// Expand a leading `~` in a filesystem path using the `HOME` environment variable.
 pub fn expand_tilde(path: &str) -> PathBuf {

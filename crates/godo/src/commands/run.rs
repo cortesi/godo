@@ -32,12 +32,7 @@ enum PostRunAction {
 }
 
 /// Run the `godo run` command logic.
-pub fn run(
-    godo: &Godo,
-    output: &dyn Output,
-    no_prompt: bool,
-    request: RunRequest,
-) -> Result<()> {
+pub fn run(godo: &Godo, output: &dyn Output, no_prompt: bool, request: RunRequest) -> Result<()> {
     let RunRequest {
         keep,
         commit,

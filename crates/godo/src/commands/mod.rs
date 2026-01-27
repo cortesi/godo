@@ -1,5 +1,10 @@
+/// Clean command.
 pub mod clean;
+/// Diff command.
 pub mod diff;
+/// List command.
 pub mod list;
+/// Remove command.
 pub mod remove;
+/// Run command.
 pub mod run;
