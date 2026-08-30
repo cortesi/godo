@@ -74,3 +74,14 @@ too_many_lines = "warn"
 # module_name_repetitions = "warn"
 # Not really usable - errors on names like min_x/min_y
 # similar_names = "warn"
+
+[workspace.metadata.nanocode]
+schema-version = 1
+requires-nanocode = ">=0.1, <0.2"
+features = "all"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

@@ -35,7 +35,8 @@ pub struct SessionLease {
     base_dir: PathBuf,
 }
 
-/// A locked handle to the sandbox lease, allowing exclusive operations during setup.
+/// A locked handle to the sandbox lease, allowing exclusive operations during
+/// setup.
 pub struct LockedSandbox {
     /// The lock file handle.
     lock_file: fs::File,
@@ -58,7 +59,8 @@ impl Drop for LockedSandbox {
 
 /// Result of releasing a lease.
 pub enum ReleaseOutcome {
-    /// No other leases remain; caller is responsible for cleanup while holding the lock.
+    /// No other leases remain; caller is responsible for cleanup while holding
+    /// the lock.
     Last(CleanupGuard),
     /// Other leases remain; skip cleanup.
     NotLast,
@@ -178,7 +180,8 @@ impl LockedSandbox {
 }
 
 impl SessionLease {
-    /// Release the lease and report whether this was the last active connection.
+    /// Release the lease and report whether this was the last active
+    /// connection.
     pub fn release(self) -> Result<ReleaseOutcome, GodoError> {
         let lease_dir = self.base_dir.join(&self.sandbox);
         let lock_file = OpenOptions::new()

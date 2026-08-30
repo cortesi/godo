@@ -1,4 +1,5 @@
 use std::{io, path::PathBuf, result::Result as StdResult};
+
 use thiserror::Error;
 
 /// Custom Result type for Godo operations.
@@ -47,7 +48,8 @@ pub enum GodoError {
         /// Human-readable error description.
         message: String,
     },
-    /// The repository has uncommitted changes and the selected policy forbids proceeding.
+    /// The repository has uncommitted changes and the selected policy forbids
+    /// proceeding.
     #[error("Uncommitted changes present in repository: {repo_dir}")]
     UncommittedChanges {
         /// Root of the repository with uncommitted changes.

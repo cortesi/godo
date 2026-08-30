@@ -2,23 +2,27 @@
 #![deny(rustdoc::missing_crate_level_docs)]
 //! Command-line interface for managing godo sandboxes via the libgodo crate.
 
+/// Command-line argument definitions.
 mod args;
+/// Command implementations.
 mod commands;
+/// Interactive terminal prompts.
 mod ui;
+/// Shared command-line utilities.
 mod utils;
 
 use std::{
     env,
     io::{self, IsTerminal, Write},
+    process,
     sync::Arc,
 };
 
 use anyhow::{Context, Result};
+use args::{Cli, Commands, RunRequest};
 use clap::Parser;
 use godo_term::{Output, Quiet, Terminal};
 use libgodo::{Godo, GodoError};
-
-use args::{Cli, Commands, RunRequest};
 use utils::{current_sandbox_name, expand_tilde};
 
 /// Default directory for storing godo-managed sandboxes.
@@ -85,7 +89,7 @@ fn main() -> Result<()> {
             }
         };
 
-        std::process::exit(exit_code);
+        process::exit(exit_code);
     }
     Ok(())
 }

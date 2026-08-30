@@ -22,3 +22,6 @@ workspace = true
 
 [dev-dependencies]
 clap.workspace = true
+
+[lib]
+doctest = false

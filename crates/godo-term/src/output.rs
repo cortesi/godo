@@ -1,10 +1,12 @@
-//! Terminal output abstractions and implementations for user-facing messages and prompts.
+//! Terminal output abstractions and implementations for user-facing messages
+//! and prompts.
 //!
-//! This module provides an [`Output`] trait that abstracts over how user messages
-//! and interactive prompts are rendered. Implementations include:
+//! This module provides an [`Output`] trait that abstracts over how user
+//! messages and interactive prompts are rendered. Implementations include:
 //!
 //! - [`Terminal`]: A color-capable terminal renderer for production use
-//! - [`Quiet`]: A silent implementation that suppresses output (useful for tests)
+//! - [`Quiet`]: A silent implementation that suppresses output (useful for
+//!   tests)
 
 use std::{
     io::{self, Write},
@@ -101,8 +103,8 @@ pub trait Output: Send + Sync {
     fn section(&self, header: &str) -> Box<dyn Output>;
     /// Start a spinner with the given message.
     ///
-    /// Returns a handle that can be used to stop the spinner with a final message.
-    /// The spinner will animate until stopped.
+    /// Returns a handle that can be used to stop the spinner with a final
+    /// message. The spinner will animate until stopped.
     fn spinner(&self, msg: &str) -> Box<dyn Spinner>;
 }
 
@@ -228,7 +230,8 @@ impl Terminal {
         }
     }
 
-    /// Build an `inquire` render configuration that matches this terminal's color mode.
+    /// Build an `inquire` render configuration that matches this terminal's
+    /// color mode.
     fn inquire_render_config(&self) -> RenderConfig<'static> {
         match self.color_choice {
             ColorChoice::Never => RenderConfig::empty(),

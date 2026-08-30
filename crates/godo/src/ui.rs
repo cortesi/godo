@@ -1,7 +1,8 @@
+use std::result::Result as StdResult;
+
 use anyhow::Result;
 use godo_term::{Output, OutputError};
 use libgodo::{CleanupBatch, CleanupReport, GodoError, MergeStatus};
-use std::result::Result as StdResult;
 
 /// Convert output-layer failures into domain errors.
 pub fn map_output_error(err: OutputError) -> GodoError {

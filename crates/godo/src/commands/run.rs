@@ -1,13 +1,14 @@
+use std::{
+    env, io,
+    path::Path,
+    process::{Command, Stdio},
+};
+
 use anyhow::Result;
 use godo_term::Output;
 use libgodo::{
     Godo, GodoError, MergeStatus, PrepareSandboxOptions, ReleaseOutcome, RemovalOptions,
     RemovalOutcome, UncommittedPolicy,
-};
-use std::{
-    env, io,
-    path::Path,
-    process::{Command, Stdio},
 };
 
 use crate::{
@@ -32,12 +33,7 @@ enum PostRunAction {
 }
 
 /// Run the `godo run` command logic.
-pub fn run(
-    godo: &Godo,
-    output: &dyn Output,
-    no_prompt: bool,
-    request: RunRequest,
-) -> Result<()> {
+pub fn run(godo: &Godo, output: &dyn Output, no_prompt: bool, request: RunRequest) -> Result<()> {
     let RunRequest {
         keep,
         commit,

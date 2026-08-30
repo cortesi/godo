@@ -38,7 +38,8 @@ impl SandboxMetadataStore {
         Ok(Some(metadata))
     }
 
-    /// Persist metadata for a sandbox, creating the metadata directory if needed.
+    /// Persist metadata for a sandbox, creating the metadata directory if
+    /// needed.
     pub fn write(&self, sandbox: &str, metadata: &SandboxMetadata) -> Result<()> {
         fs::create_dir_all(&self.base_dir).with_context(|| {
             format!(

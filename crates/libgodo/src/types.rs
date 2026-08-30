@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ReleaseOutcome,
     error::{GodoError, Result},
     git::{CommitInfo, DiffStats, MergeStatus},
     session::SessionLease,
@@ -63,7 +64,7 @@ pub struct SandboxSession {
 
 impl SandboxSession {
     /// Release the session lease and report whether cleanup is permitted.
-    pub fn release(self) -> Result<crate::session::ReleaseOutcome> {
+    pub fn release(self) -> Result<ReleaseOutcome> {
         self.lease.release()
     }
 }
@@ -79,17 +80,21 @@ pub struct SandboxStatus {
     pub has_worktree: bool,
     /// Whether the worktree directory path exists.
     pub has_worktree_dir: bool,
-    /// Branch currently checked out in the worktree, sans refs prefix, when known.
+    /// Branch currently checked out in the worktree, sans refs prefix, when
+    /// known.
     pub worktree_branch: Option<String>,
     /// Whether the worktree is in detached HEAD state.
     pub worktree_detached: bool,
-    /// Whether the worktree is checking out the expected sandbox branch when attached.
+    /// Whether the worktree is checking out the expected sandbox branch when
+    /// attached.
     pub worktree_branch_matches: bool,
-    /// Whether there are any staged or unstaged uncommitted changes in the worktree.
+    /// Whether there are any staged or unstaged uncommitted changes in the
+    /// worktree.
     pub has_uncommitted_changes: bool,
     /// Diff statistics for uncommitted changes (lines added/removed).
     pub diff_stats: Option<DiffStats>,
-    /// Merge relationship between the sandbox branch and its integration target.
+    /// Merge relationship between the sandbox branch and its integration
+    /// target.
     pub merge_status: MergeStatus,
     /// Commits not yet merged into the integration target.
     pub unmerged_commits: Vec<CommitInfo>,

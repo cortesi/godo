@@ -48,7 +48,8 @@ pub fn init_repository(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a temporary repository with the provided name relative to the temp dir.
+/// Create a temporary repository with the provided name relative to the temp
+/// dir.
 pub fn create_repo(repo_name: &str) -> Result<(TempDir, PathBuf)> {
     let temp_dir = TempDir::new()?;
     let repo_path = temp_dir.path().join(repo_name);

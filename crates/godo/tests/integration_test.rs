@@ -1,4 +1,5 @@
-// Integration tests are compiled as a separate crate, so these lints don't apply
+// Integration tests are compiled as a separate crate, so these lints don't
+// apply
 #![allow(clippy::tests_outside_test_module)]
 #![allow(missing_docs)]
 
@@ -119,8 +120,9 @@ fn test_clean_command_section_output() -> Result<()> {
     );
 
     // Check for indented messages - all sandboxes show as "unchanged"
-    // This is because they were just created and the worktrees exist but are considered "unchanged"
-    // Let's check for the actual output we're seeing (3-space indent)
+    // This is because they were just created and the worktrees exist but are
+    // considered "unchanged" Let's check for the actual output we're seeing
+    // (3-space indent)
     assert!(
         stdout.contains("   unchanged")
             || stdout.contains("   removed unmodified worktree")
@@ -566,7 +568,8 @@ fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
     fs::write(repo_path.join("uncommitted.txt"), "uncommitted content")?;
     git(&repo_path, &["add", "uncommitted.txt"])?;
 
-    // Run godo with --no-prompt flag (which should use the default behavior of continuing with changes)
+    // Run godo with --no-prompt flag (which should use the default behavior of
+    // continuing with changes)
     let output = run_godo(
         &repo_path,
         godo_dir.path(),
@@ -591,7 +594,8 @@ fn test_clean_branch_option_with_uncommitted_changes() -> Result<()> {
     let sandbox_dir = project_dir.join("test-sandbox");
     assert!(sandbox_dir.exists(), "Sandbox directory should exist");
 
-    // Verify that uncommitted file exists in the sandbox (with --no-prompt, it continues with changes)
+    // Verify that uncommitted file exists in the sandbox (with --no-prompt, it
+    // continues with changes)
     assert!(
         sandbox_dir.join("uncommitted.txt").exists(),
         "Uncommitted file should exist in sandbox when using --no-prompt"

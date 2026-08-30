@@ -46,7 +46,8 @@ pub enum Commands {
         #[arg(long)]
         keep: bool,
 
-        /// Automatically commit all changes with the specified message after command exits
+        /// Automatically commit all changes with the specified message after
+        /// command exits
         #[arg(long)]
         commit: Option<String>,
 
@@ -54,7 +55,8 @@ pub enum Commands {
         #[arg(long = "sh")]
         sh: bool,
 
-        /// Exclude directories that match glob (can be specified multiple times)
+        /// Exclude directories that match glob (can be specified multiple
+        /// times)
         #[arg(long = "exclude", value_name = "GLOB")]
         excludes: Vec<String>,
 
@@ -71,7 +73,8 @@ pub enum Commands {
 
     /// Diff a sandbox against its recorded base commit
     Diff {
-        /// Name of the sandbox to diff (auto-detected if running from within a sandbox)
+        /// Name of the sandbox to diff (auto-detected if running from within a
+        /// sandbox)
         name: Option<String>,
 
         /// Override the base commit used for diffing
@@ -100,7 +103,8 @@ pub enum Commands {
 
     /// Clean up a sandbox by removing worktree but keeping the branch
     Clean {
-        /// Name of the sandbox to clean (if not specified, cleans all sandboxes)
+        /// Name of the sandbox to clean (if not specified, cleans all
+        /// sandboxes)
         name: Option<String>,
     },
 }

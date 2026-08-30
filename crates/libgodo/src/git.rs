@@ -7,7 +7,8 @@ use std::{
 use anyhow::{Context, Result};
 
 /// Run a git command with the given arguments in the specified directory.
-/// Returns the output if successful, otherwise returns an error with the full command details.
+/// Returns the output if successful, otherwise returns an error with the full
+/// command details.
 fn run_git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     let output = Command::new("git")
         .current_dir(repo_path)
@@ -57,16 +58,17 @@ pub fn head_ref(repo_path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// Walk up from `start_dir` to find the nearest repository root containing a `.git` directory.
+/// Walk up from `start_dir` to find the nearest repository root containing a
+/// `.git` directory.
 pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir;
     loop {
         if current.join(".git").exists() {
             return Some(current.to_path_buf());
         }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
+        {
+            let parent = current.parent()?;
+            current = parent
         }
     }
 }
@@ -165,7 +167,8 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> R
         .any(|wt| paths_match(&wt.path, worktree_path));
 
     if !exists {
-        // Treat non-existent worktree as success, since the desired end state is achieved
+        // Treat non-existent worktree as success, since the desired end state is
+        // achieved
         return Ok(());
     }
 
@@ -214,7 +217,8 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Delete the branch named `branch_name`, forcing the deletion when `force` is `true`.
+/// Delete the branch named `branch_name`, forcing the deletion when `force` is
+/// `true`.
 pub fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result<()> {
     let mut args = vec!["branch"];
     if force {
@@ -240,12 +244,14 @@ pub fn commit(repo_path: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
-/// Metadata describing a Git worktree as reported by `git worktree list --porcelain`.
+/// Metadata describing a Git worktree as reported by `git worktree list
+/// --porcelain`.
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     /// Filesystem path where the worktree is checked out.
     pub path: PathBuf,
-    /// Fully-qualified ref backing the worktree, when the worktree is attached to a branch.
+    /// Fully-qualified ref backing the worktree, when the worktree is attached
+    /// to a branch.
     pub branch: Option<String>,
     /// Whether the worktree is currently checked out in detached HEAD state.
     pub is_detached: bool,
@@ -312,7 +318,8 @@ pub enum MergeStatus {
     Diverged,
     /// The branch tip is fully merged into the integration target.
     Clean,
-    /// The relationship could not be determined (missing upstream, missing remote, etc.).
+    /// The relationship could not be determined (missing upstream, missing
+    /// remote, etc.).
     Unknown,
 }
 
@@ -330,7 +337,8 @@ pub struct CommitInfo {
 }
 
 /// Find the integration target branch for a given branch.
-/// Returns the first valid target from: local main/master, configured upstream, remote default.
+/// Returns the first valid target from: local main/master, configured upstream,
+/// remote default.
 fn find_integration_target(repo_path: &Path, branch_name: &str) -> Result<Option<String>> {
     let mut candidates = Vec::new();
 
@@ -526,7 +534,8 @@ pub fn default_integration_target(repo_path: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Reset the working directory to match `HEAD`, removing all uncommitted changes.
+/// Reset the working directory to match `HEAD`, removing all uncommitted
+/// changes.
 pub fn reset_hard(repo_path: &Path) -> Result<()> {
     run_git(repo_path, &["reset", "--hard", "HEAD"])?;
     Ok(())

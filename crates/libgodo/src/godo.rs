@@ -123,7 +123,8 @@ pub struct Godo {
 }
 
 impl Godo {
-    /// Directory under the project root reserved for godo's internal bookkeeping.
+    /// Directory under the project root reserved for godo's internal
+    /// bookkeeping.
     const LEASE_DIR: &'static str = LEASE_DIR_NAME;
     /// Directory under the project root reserved for sandbox metadata.
     const METADATA_DIR: &'static str = SandboxMetadataStore::DIR_NAME;
@@ -131,7 +132,8 @@ impl Godo {
     ///
     /// - `godo_dir`: directory where project sandboxes are stored
     /// - `repo_dir`: optional path to the git repository root. If `None`, the
-    ///   repository root is discovered by walking up from the current directory.
+    ///   repository root is discovered by walking up from the current
+    ///   directory.
     pub fn new(godo_dir: PathBuf, repo_dir: Option<PathBuf>) -> Result<Self> {
         // Ensure godo directory exists
         ensure_godo_directory(&godo_dir)?;
@@ -503,7 +505,8 @@ impl Godo {
         let has_branch =
             git::has_branch(&self.repo_dir, &branch_name).map_err(|e| git_error(&e))?;
 
-        // Get all worktrees to check if this sandbox has a worktree attached in the godo directory
+        // Get all worktrees to check if this sandbox has a worktree attached in the
+        // godo directory
         let worktrees = git::list_worktrees(&self.repo_dir).map_err(|e| git_error(&e))?;
         let matching_worktree = worktrees.iter().find(|w| w.path == sandbox_path);
 
@@ -747,7 +750,8 @@ impl Godo {
         Ok(batch)
     }
 
-    /// Clean up a sandbox by removing worktree if no uncommitted changes and branch if no unmerged commits.
+    /// Clean up a sandbox by removing worktree if no uncommitted changes and
+    /// branch if no unmerged commits.
     fn cleanup_sandbox(&self, name: &str) -> Result<CleanupReport> {
         let status = self.require_sandbox_status(name)?;
 
@@ -776,7 +780,8 @@ impl Godo {
         // Only remove the branch if:
         // 1. It exists
         // 2. It has no unmerged commits
-        // 3. Either we successfully removed the worktree OR (there was no worktree to begin with AND no worktree directory exists)
+        // 3. Either we successfully removed the worktree OR (there was no worktree to
+        //    begin with AND no worktree directory exists)
         if status.has_branch
             && matches!(status.merge_status, MergeStatus::Clean)
             && (worktree_removed || (!status.has_worktree && !status.has_worktree_dir))
